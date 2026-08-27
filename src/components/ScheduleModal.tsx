@@ -1,10 +1,9 @@
 import React from 'react';
-import type { User, Case } from '../types';
+import type { User } from '../types';
 
 interface ScheduleModalProps {
   show: boolean;
   scheduleCaseId: number | null;
-  cases: Case[];
   users: User[];
   scheduleDate: string;
   setScheduleDate: (val: string) => void;
@@ -21,7 +20,6 @@ interface ScheduleModalProps {
 export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   show,
   scheduleCaseId,
-  cases,
   users,
   scheduleDate,
   setScheduleDate,
@@ -36,9 +34,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 }) => {
   if (!show || !scheduleCaseId) return null;
 
-  const currentCase = cases.find(c => c.id === scheduleCaseId);
-
-  return (
+    return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: '460px' }}>
         <div className="modal-header">
