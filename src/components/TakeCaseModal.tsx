@@ -3,14 +3,14 @@ import type { Case, User } from '../types';
 
 interface TakeCaseModalProps {
   show: boolean;
-  selectedCase: Case | null;
+  selectedCase?: Case | null | undefined;
   currentUser: User | null;
   takeCaseMode: 'solo' | 'equipo';
   setTakeCaseMode: (val: 'solo' | 'equipo') => void;
   takeCaseSupportTech: string;
   setTakeCaseSupportTech: (val: string) => void;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: (e?: any) => void;
 }
 
 export const TakeCaseModal: React.FC<TakeCaseModalProps> = ({
