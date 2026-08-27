@@ -4237,7 +4237,7 @@ export default function App() {
                   admContrasena={admContrasena}
                   setAdmContrasena={setAdmContrasena}
                   admRole={admRole}
-                  setAdmRole={setAdmRole}
+                  setAdmRole={setAdmRole as any}
                   admTiendaNombre={admTiendaNombre}
                   setAdmTiendaNombre={setAdmTiendaNombre}
                   handleAdminUserSubmit={handleAdminUserSubmit}
@@ -4259,6 +4259,7 @@ export default function App() {
                 />
               ) : activeTab === 'tecnicos_actividad' ? (
                 <TecnicosActividadTab
+                  currentUser={currentUser}
                   techActivityTechFilter={techActivityTechFilter}
                   setTechActivityTechFilter={setTechActivityTechFilter}
                   techActivityStoreFilter={techActivityStoreFilter}
@@ -4267,12 +4268,15 @@ export default function App() {
                   stores={stores}
                   cases={cases}
                   setSelectedCaseId={setSelectedCaseId}
+                  setShowNewTechCaseModal={setShowNewTechCaseModal}
                 />
               ) : activeTab === 'historial_asistencias' ? (
                 <HistorialAsistenciasTab
+                  currentUser={currentUser}
                   cases={cases}
                   stores={stores}
                   users={users}
+                  setSelectedCaseId={setSelectedCaseId}
                   loadSheetJS={loadSheetJS}
                 />
               ) : activeTab === 'agenda_turnos' ? (
@@ -4288,6 +4292,7 @@ export default function App() {
                 <DisponibilidadTab
                   disponibilidadTab={disponibilidadTab}
                   setDisponibilidadTab={setDisponibilidadTab}
+                  shiftSchedule={shiftSchedule}
                   techAvailability={techAvailability}
                   handleImportTechAvailability={handleImportTechAvailability}
                   loadSheetJS={loadSheetJS}
