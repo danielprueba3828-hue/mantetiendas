@@ -70,7 +70,7 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
           .map(tech => {
             const activeCase = cases.find(c => 
               (c.tecnicoAsignadoId === tech.id || (c.tecnico_presencial_nombre && c.tecnico_presencial_nombre.toLowerCase().includes(tech.nombre.toLowerCase().split(' ')[0]))) &&
-              (c.estado === 'en_proceso' || c.estado === 'pausado_material')
+              (c.estado === 'en_proceso' || c.pausado_por_material)
             );
 
             if (techActivityStoreFilter !== 'todas') {
@@ -79,7 +79,7 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
 
             const store = activeCase ? stores.find(s => s.id === activeCase.tiendaId) : null;
             const isWorking = activeCase && activeCase.estado === 'en_proceso' && (!activeCase.tecnico_estatus_trabajo || activeCase.tecnico_estatus_trabajo === 'Trabajando en tienda');
-            const isStandBy = activeCase && (activeCase.estado === 'pausado_material' || activeCase.tecnico_estatus_trabajo === 'En stand by');
+            const isStandBy = activeCase && (activeCase.pausado_por_material || activeCase.tecnico_estatus_trabajo === 'En stand by');
 
             return (
               <div key={tech.id} className="card animate-fade" style={{ borderTop: `4px solid ${isWorking ? 'var(--success)' : isStandBy ? 'var(--warning)' : 'var(--text-muted)'}`, padding: '16px' }}>
@@ -120,7 +120,7 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
                       </div>
                       <div>
                         <span style={{ color: 'var(--text-muted)', display: 'block' }}>Estatus Trabajo:</span>
-                        <strong>{activeCase.tecnico_estatus_trabajo || (activeCase.estado === 'pausado_material' ? 'Pausado Material' : 'Trabajando')}</strong>
+                        <strong>{activeCase.tecnico_estatus_trabajo || (activeCase.pausado_por_material ? 'Pausado Material' : 'Trabajando')}</strong>
                       </div>
                     </div>
 

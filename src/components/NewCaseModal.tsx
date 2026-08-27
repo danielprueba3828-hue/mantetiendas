@@ -1,6 +1,5 @@
 import React from 'react';
 import type { Store, User } from '../types';
-import { SearchableStoreSelect } from './SearchableStoreSelect';
 
 interface NewCaseModalProps {
   show: boolean;
@@ -8,14 +7,12 @@ interface NewCaseModalProps {
   stores: Store[];
   categories: { id: number; nombre: string; prioridadSugerida: number; }[];
   users: User[];
-  newCaseCategory: string;
+  newCategoryText: string;
   handleCategoryChange: (catName: string) => void;
-  newCaseStoreId: number;
-  setNewCaseStoreId: (val: number) => void;
-  newCasePriority: number;
-  setNewCasePriority: (val: number) => void;
-  newCaseDescription: string;
-  setNewCaseDescription: (val: string) => void;
+  newPriority: number;
+  setNewPriority: (val: number) => void;
+  newDesc: string;
+  setNewDesc: (val: string) => void;
   newCaseDamagePhotos: string[];
   setNewCaseDamagePhotos: React.Dispatch<React.SetStateAction<string[]>>;
   handleNewCasePhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -45,14 +42,12 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
   stores,
   categories,
   users,
-  newCaseCategory,
+  newCategoryText,
   handleCategoryChange,
-  newCaseStoreId,
-  setNewCaseStoreId,
-  newCasePriority,
-  setNewCasePriority,
-  newCaseDescription,
-  setNewCaseDescription,
+  newPriority,
+  setNewPriority,
+  newDesc,
+  setNewDesc,
   newCaseDamagePhotos,
   setNewCaseDamagePhotos,
   handleNewCasePhotoChange,
@@ -77,6 +72,8 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
 }) => {
   if (!show) return null;
 
+  const currentStore = stores.find(s => s.id === currentUser?.tiendaId);
+
   return (
     <div className="modal-backdrop">
       <div className="modal-sheet" style={{ maxWidth: '580px', width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
@@ -95,38 +92,23 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
         </div>
 
         <form onSubmit={onSubmit} style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          {/* Tienda */}
-          {currentUser && (currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') ? (
-            <div>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>Tienda Asignada</label>
-              <input 
-                type="text" 
-                disabled 
-                value={stores.find(s => s.id === currentUser.tiendaId)?.nombre || 'Mi Tienda'} 
-                style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-muted)', fontSize: '0.85rem', boxSizing: 'border-box' }}
-              />
-            </div>
-          ) : (
-            <div>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>Seleccionar Tienda *</label>
-              <SearchableStoreSelect
-                stores={stores}
-                value={newCaseStoreId}
-                onChange={val => setNewCaseStoreId(Number(val))}
-                currentUser={currentUser}
-                placeholder="Buscar tienda por nombre o código..."
-                allOptionLabel="-- Seleccione una Tienda --"
-                allOptionValue="0"
-              />
-            </div>
-          )}
+          {/* Tienda Asignada */}
+          <div>
+            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>Tienda Asignada</label>
+            <input 
+              type="text" 
+              disabled 
+              value={currentStore ? currentStore.nombre : 'Tienda Principal'} 
+              style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-muted)', fontSize: '0.85rem', boxSizing: 'border-box' }}
+            />
+          </div>
 
           {/* Categoría y Prioridad */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>Categoría *</label>
               <select
-                value={newCaseCategory}
+                value={newCategoryText}
                 onChange={e => handleCategoryChange(e.target.value)}
                 required
                 className="custom-select"
@@ -141,8 +123,8 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
             <div>
               <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>Nivel de Prioridad *</label>
               <select
-                value={newCasePriority}
-                onChange={e => setNewCasePriority(Number(e.target.value))}
+                value={newPriority}
+                onChange={e => setNewPriority(Number(e.target.value))}
                 className="custom-select"
                 style={{ width: '100%' }}
               >
@@ -158,8 +140,8 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
           <div>
             <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>Descripción del Problema o Avería *</label>
             <textarea
-              value={newCaseDescription}
-              onChange={e => setNewCaseDescription(e.target.value)}
+              value={newDesc}
+              onChange={e => setNewDesc(e.target.value)}
               required
               rows={3}
               placeholder="Explique detalladamente la falla observada..."

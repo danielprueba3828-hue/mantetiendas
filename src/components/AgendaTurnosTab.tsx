@@ -23,10 +23,10 @@ export const AgendaTurnosTab: React.FC<AgendaTurnosTabProps> = ({
     if (scheduleSearchQuery.trim()) {
       const q = scheduleSearchQuery.toLowerCase();
       return (
-        s.supervisor.toLowerCase().includes(q) ||
-        s.tecnico.toLowerCase().includes(q) ||
-        s.turno.toLowerCase().includes(q) ||
-        s.zona.toLowerCase().includes(q)
+        (s.supervisorTurno && s.supervisorTurno.toLowerCase().includes(q)) ||
+        (s.supervisorApoyo && s.supervisorApoyo.toLowerCase().includes(q)) ||
+        (s.tecnicoGuardia && s.tecnicoGuardia.toLowerCase().includes(q)) ||
+        (s.evento && s.evento.toLowerCase().includes(q))
       );
     }
     return true;
@@ -35,15 +35,13 @@ export const AgendaTurnosTab: React.FC<AgendaTurnosTabProps> = ({
   const exportScheduleExcel = async () => {
     const XLSX = await loadSheetJS();
     const rows = filteredSchedule.map(s => ({
+      'ID': s.id,
       'Mes': s.mes,
-      'Semana': s.semana,
-      'Fecha Inicio': s.fechaInicio,
-      'Fecha Fin': s.fechaFin,
-      'Supervisor': s.supervisor,
-      'Técnico Asignado': s.tecnico,
-      'Turno': s.turno,
-      'Horario': s.horario,
-      'Zona / Región': s.zona
+      'Fechas': s.fechas,
+      'Evento': s.evento,
+      'Supervisor de Turno': s.supervisorTurno,
+      'Supervisor de Apoyo': s.supervisorApoyo,
+      'Técnico de Guardia': s.tecnicoGuardia
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(rows);
@@ -79,7 +77,7 @@ export const AgendaTurnosTab: React.FC<AgendaTurnosTabProps> = ({
 
           <input
             type="text"
-            placeholder="🔍 Buscar supervisor/técnico..."
+            placeholder="🔍 Buscar supervisor o técnico..."
             value={scheduleSearchQuery}
             onChange={e => setScheduleSearchQuery(e.target.value)}
             style={{ padding: '6px 10px', fontSize: '0.8rem', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)' }}
@@ -102,26 +100,24 @@ export const AgendaTurnosTab: React.FC<AgendaTurnosTabProps> = ({
             <thead>
               <tr style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-color)' }}>
                 <th style={{ padding: '12px 14px' }}>Mes</th>
-                <th style={{ padding: '12px 14px' }}>Semana</th>
                 <th style={{ padding: '12px 14px' }}>Fechas</th>
-                <th style={{ padding: '12px 14px' }}>Supervisor</th>
-                <th style={{ padding: '12px 14px' }}>Técnico</th>
-                <th style={{ padding: '12px 14px' }}>Turno</th>
-                <th style={{ padding: '12px 14px' }}>Zona</th>
+                <th style={{ padding: '12px 14px' }}>Evento / Detalle</th>
+                <th style={{ padding: '12px 14px' }}>Supervisor Turno</th>
+                <th style={{ padding: '12px 14px' }}>Supervisor Apoyo</th>
+                <th style={{ padding: '12px 14px' }}>Técnico Guardia</th>
               </tr>
             </thead>
             <tbody>
               {filteredSchedule.map(s => (
                 <tr key={s.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
                   <td style={{ padding: '12px 14px', fontWeight: 700 }}>{s.mes}</td>
-                  <td style={{ padding: '12px 14px' }}>{s.semana}</td>
-                  <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>{s.fechaInicio} al {s.fechaFin}</td>
-                  <td style={{ padding: '12px 14px', fontWeight: 600, color: 'var(--primary)' }}>{s.supervisor}</td>
-                  <td style={{ padding: '12px 14px' }}>{s.tecnico}</td>
+                  <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>{s.fechas}</td>
+                  <td style={{ padding: '12px 14px' }}>{s.evento}</td>
+                  <td style={{ padding: '12px 14px', fontWeight: 600, color: 'var(--primary)' }}>{s.supervisorTurno}</td>
+                  <td style={{ padding: '12px 14px' }}>{s.supervisorApoyo}</td>
                   <td style={{ padding: '12px 14px' }}>
-                    <span className="badge badge-secondary" style={{ fontSize: '0.72rem' }}>{s.turno}</span>
+                    <span className="badge badge-secondary" style={{ fontSize: '0.72rem' }}>{s.tecnicoGuardia}</span>
                   </td>
-                  <td style={{ padding: '12px 14px' }}>{s.zona}</td>
                 </tr>
               ))}
             </tbody>

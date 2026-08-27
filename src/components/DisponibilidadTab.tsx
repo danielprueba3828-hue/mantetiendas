@@ -1,11 +1,10 @@
 import React from 'react';
-import type { TechAvailability, User } from '../types';
+import type { TechAvailability } from '../types';
 
 interface DisponibilidadTabProps {
   disponibilidadTab: 'cuadrante' | 'horarios';
   setDisponibilidadTab: (val: 'cuadrante' | 'horarios') => void;
   techAvailability: TechAvailability[];
-  users: User[];
   handleImportTechAvailability: (e: React.ChangeEvent<HTMLInputElement>) => void;
   loadSheetJS: () => Promise<any>;
 }
@@ -14,7 +13,6 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
   disponibilidadTab,
   setDisponibilidadTab,
   techAvailability,
-  users,
   handleImportTechAvailability,
   loadSheetJS
 }) => {
@@ -23,7 +21,7 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
     const rows = techAvailability.map(t => ({
       'ID': t.id,
       'Técnico': t.tecnicoNombre,
-      'Días Libres': (t.diasLibres || []).join(', '),
+      'Días Libres': t.diasLibres || 'Sábado / Domingo',
       'Estatus': t.estatus
     }));
 
@@ -100,7 +98,7 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
               </thead>
               <tbody>
                 {techAvailability.map(t => {
-                  const diasLibres = t.diasLibres || [];
+                  const diasLibresStr = t.diasLibres || '';
                   const days = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
                   return (
                     <tr key={t.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
@@ -108,7 +106,7 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
                         {t.tecnicoNombre}
                       </td>
                       {days.map(d => {
-                        const isFree = diasLibres.includes(d);
+                        const isFree = diasLibresStr.toLowerCase().includes(d.substring(0, 3).toLowerCase());
                         return (
                           <td key={d} style={{ padding: '12px 8px' }}>
                             <span style={{ 
@@ -126,7 +124,7 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
                         );
                       })}
                       <td style={{ padding: '12px 14px' }}>
-                        <span className={`badge ${t.estatus === 'activo' ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.72rem' }}>
+                        <span className="badge badge-success" style={{ fontSize: '0.72rem' }}>
                           {t.estatus.toUpperCase()}
                         </span>
                       </td>
@@ -143,12 +141,12 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
             <div key={t.id} className="card" style={{ padding: '14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700 }}>{t.tecnicoNombre}</h4>
-                <span className={`badge ${t.estatus === 'activo' ? 'badge-success' : 'badge-secondary'}`} style={{ fontSize: '0.7rem' }}>
+                <span className="badge badge-secondary" style={{ fontSize: '0.7rem' }}>
                   {t.estatus}
                 </span>
               </div>
               <p style={{ margin: '4px 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                Días Libres: <strong>{(t.diasLibres || []).join(', ') || 'Ninguno'}</strong>
+                Días Libres: <strong>{t.diasLibres || 'Sábado / Domingo'}</strong>
               </p>
             </div>
           ))}

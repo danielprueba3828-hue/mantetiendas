@@ -1,6 +1,6 @@
 import React from 'react';
 import type { Store, User } from '../types';
-import { SearchableStoreSelect } from './SearchableStoreSelect';
+import { getStoresForSupervisor } from '../helpers';
 
 interface AdminTabProps {
   adminSectionTab: 'usuarios' | 'tiendas';
@@ -19,23 +19,20 @@ interface AdminTabProps {
   setAdminStoreSearch: (val: string) => void;
   users: User[];
   stores: Store[];
-  currentUser: User | null;
   // User Form State
   editingUserId: number | null;
-  adminUserName: string;
-  setAdminUserName: (val: string) => void;
-  adminUserEmail: string;
-  setAdminUserEmail: (val: string) => void;
-  adminUserLogin: string;
-  setAdminUserLogin: (val: string) => void;
-  adminUserPass: string;
-  setAdminUserPass: (val: string) => void;
-  adminUserRole: 'administrador' | 'supervisor' | 'jefe_tienda' | 'subjefe' | 'tecnico';
-  setAdminUserRole: (val: 'administrador' | 'supervisor' | 'jefe_tienda' | 'subjefe' | 'tecnico') => void;
-  adminUserStoreId: number | '';
-  setAdminUserStoreId: (val: number | '') => void;
-  adminUserSuperStores: number[];
-  setAdminUserSuperStores: React.Dispatch<React.SetStateAction<number[]>>;
+  admName: string;
+  setAdmName: (val: string) => void;
+  admEmail: string;
+  setAdmEmail: (val: string) => void;
+  admUsername: string;
+  setAdmUsername: (val: string) => void;
+  admContrasena: string;
+  setAdmContrasena: (val: string) => void;
+  admRole: 'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico';
+  setAdmRole: (val: 'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico') => void;
+  admTiendaNombre: string;
+  setAdmTiendaNombre: (val: string) => void;
   handleAdminUserSubmit: (e: React.FormEvent) => void;
   handleStartEditUser: (u: User) => void;
   handleCancelEditUser: () => void;
@@ -43,17 +40,16 @@ interface AdminTabProps {
   handleAdminToggleUser: (id: number) => void;
   // Store Form State
   editingStoreId: number | null;
-  adminStoreName: string;
-  setAdminStoreName: (val: string) => void;
-  adminStoreCity: string;
-  setAdminStoreCity: (val: string) => void;
-  adminStoreAddress: string;
-  setAdminStoreAddress: (val: string) => void;
+  newStoreName: string;
+  setNewStoreName: (val: string) => void;
+  newStoreCity: string;
+  setNewStoreCity: (val: string) => void;
+  newStoreDir: string;
+  setNewStoreDir: (val: string) => void;
   handleAdminStoreSubmit: (e: React.FormEvent) => void;
   handleStartEditStore: (s: Store) => void;
   handleCancelEditStore: () => void;
   handleAdminDeleteStore: (id: number) => void;
-  getUserBadgeText: (u: User) => string;
 }
 
 export const AdminTab: React.FC<AdminTabProps> = ({
@@ -73,39 +69,35 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   setAdminStoreSearch,
   users,
   stores,
-  currentUser,
   editingUserId,
-  adminUserName,
-  setAdminUserName,
-  adminUserEmail,
-  setAdminUserEmail,
-  adminUserLogin,
-  setAdminUserLogin,
-  adminUserPass,
-  setAdminUserPass,
-  adminUserRole,
-  setAdminUserRole,
-  adminUserStoreId,
-  setAdminUserStoreId,
-  adminUserSuperStores,
-  setAdminUserSuperStores,
+  admName,
+  setAdmName,
+  admEmail,
+  setAdmEmail,
+  admUsername,
+  setAdmUsername,
+  admContrasena,
+  setAdmContrasena,
+  admRole,
+  setAdmRole,
+  admTiendaNombre,
+  setAdmTiendaNombre,
   handleAdminUserSubmit,
   handleStartEditUser,
   handleCancelEditUser,
   handleAdminDeleteUser,
   handleAdminToggleUser,
   editingStoreId,
-  adminStoreName,
-  setAdminStoreName,
-  adminStoreCity,
-  setAdminStoreCity,
-  adminStoreAddress,
-  setAdminStoreAddress,
+  newStoreName,
+  setNewStoreName,
+  newStoreCity,
+  setNewStoreCity,
+  newStoreDir,
+  setNewStoreDir,
   handleAdminStoreSubmit,
   handleStartEditStore,
   handleCancelEditStore,
-  handleAdminDeleteStore,
-  getUserBadgeText
+  handleAdminDeleteStore
 }) => {
   return (
     <div className="view-container animate-fade">
@@ -202,8 +194,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   <input
                     type="text"
                     required
-                    value={adminUserName}
-                    onChange={e => setAdminUserName(e.target.value)}
+                    value={admName}
+                    onChange={e => setAdmName(e.target.value)}
                     placeholder="Ej: Juan Pérez"
                     style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
                   />
@@ -213,8 +205,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   <input
                     type="email"
                     required
-                    value={adminUserEmail}
-                    onChange={e => setAdminUserEmail(e.target.value)}
+                    value={admEmail}
+                    onChange={e => setAdmEmail(e.target.value)}
                     placeholder="correo@ejemplo.com"
                     style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
                   />
@@ -224,8 +216,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   <input
                     type="text"
                     required
-                    value={adminUserLogin}
-                    onChange={e => setAdminUserLogin(e.target.value)}
+                    value={admUsername}
+                    onChange={e => setAdmUsername(e.target.value)}
                     placeholder="usuario123"
                     style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
                   />
@@ -237,8 +229,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   <input
                     type="password"
                     required={!editingUserId}
-                    value={adminUserPass}
-                    onChange={e => setAdminUserPass(e.target.value)}
+                    value={admContrasena}
+                    onChange={e => setAdmContrasena(e.target.value)}
                     placeholder={editingUserId ? 'Dejar en blanco para conservar' : 'Mínimo 6 caracteres'}
                     style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
                   />
@@ -246,60 +238,32 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 <div>
                   <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Rol en el Sistema *</label>
                   <select
-                    value={adminUserRole}
-                    onChange={e => setAdminUserRole(e.target.value as any)}
+                    value={admRole}
+                    onChange={e => setAdmRole(e.target.value as any)}
                     className="custom-select"
                     style={{ width: '100%', fontSize: '0.82rem', padding: '8px' }}
                   >
-                    <option value="administrador">Administrador General</option>
-                    <option value="supervisor">Supervisor de Zona</option>
                     <option value="jefe_tienda">Jefe de Tienda</option>
                     <option value="subjefe">Subjefe de Tienda</option>
+                    <option value="supervisor">Supervisor de Zona</option>
                     <option value="tecnico">Técnico Operativo</option>
                   </select>
                 </div>
 
-                {(adminUserRole === 'jefe_tienda' || adminUserRole === 'subjefe') && (
+                {(admRole === 'jefe_tienda' || admRole === 'subjefe') && (
                   <div>
                     <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Tienda Asignada *</label>
-                    <SearchableStoreSelect
-                      stores={stores}
-                      value={adminUserStoreId}
-                      onChange={val => setAdminUserStoreId(val ? Number(val) : '')}
-                      currentUser={currentUser}
-                      placeholder="Buscar tienda asignada..."
-                      allOptionLabel="-- Seleccionar Tienda --"
-                      allOptionValue=""
-                    />
-                  </div>
-                )}
-
-                {adminUserRole === 'supervisor' && (
-                  <div style={{ gridColumn: '1 / -1' }}>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '6px' }}>
-                      Tiendas Bajo su Supervisión ({adminUserSuperStores.length} seleccionadas):
-                    </label>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '6px', maxHeight: '150px', overflowY: 'auto', padding: '8px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--bg-surface)' }}>
-                      {stores.map(st => {
-                        const isChecked = adminUserSuperStores.includes(st.id);
-                        return (
-                          <label key={st.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', cursor: 'pointer' }}>
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={e => {
-                                if (e.target.checked) {
-                                  setAdminUserSuperStores(prev => [...prev, st.id]);
-                                } else {
-                                  setAdminUserSuperStores(prev => prev.filter(id => id !== st.id));
-                                }
-                              }}
-                            />
-                            <span>{st.nombre}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
+                    <select
+                      value={admTiendaNombre}
+                      onChange={e => setAdmTiendaNombre(e.target.value)}
+                      className="custom-select"
+                      style={{ width: '100%', fontSize: '0.82rem', padding: '8px' }}
+                    >
+                      <option value="">-- Seleccionar Tienda --</option>
+                      {stores.map(s => (
+                        <option key={s.id} value={s.nombre}>{s.nombre}</option>
+                      ))}
+                    </select>
                   </div>
                 )}
 
@@ -336,7 +300,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                         const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
                         if (supObj) {
                           if (u.rol === 'supervisor' && u.nombre !== adminSupervisorFilter) return false;
-                          if (u.tiendaId && (!supObj.supervisorTiendas || !supObj.supervisorTiendas.includes(u.tiendaId))) return false;
+                          const assignedStores = getStoresForSupervisor(supObj.nombre, stores, users);
+                          if (u.tiendaId && !assignedStores.some((s: Store) => s.id === u.tiendaId)) return false;
                         }
                       }
                       if (adminUserSearch.trim()) {
@@ -442,8 +407,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   <input
                     type="text"
                     required
-                    value={adminStoreName}
-                    onChange={e => setAdminStoreName(e.target.value)}
+                    value={newStoreName}
+                    onChange={e => setNewStoreName(e.target.value)}
                     placeholder="Ej: MARATHON MALL DEL SOL"
                     style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
                   />
@@ -453,8 +418,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   <input
                     type="text"
                     required
-                    value={adminStoreCity}
-                    onChange={e => setAdminStoreCity(e.target.value)}
+                    value={newStoreCity}
+                    onChange={e => setNewStoreCity(e.target.value)}
                     placeholder="Ej: Guayaquil"
                     style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
                   />
@@ -463,8 +428,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Dirección</label>
                   <input
                     type="text"
-                    value={adminStoreAddress}
-                    onChange={e => setAdminStoreAddress(e.target.value)}
+                    value={newStoreDir}
+                    onChange={e => setNewStoreDir(e.target.value)}
                     placeholder="Ej: Av. Juan Tanca Marengo"
                     style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
                   />
