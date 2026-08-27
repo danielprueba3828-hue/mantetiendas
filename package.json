@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "mobile": "start chrome --app=http://localhost:5173/ --window-size=412,892",
     "build": "tsc -b && vite build",
+    "build:apk": "npm run build && npx cap sync android && cd android && gradlew.bat assembleDebug && copy app\\build\\outputs\\apk\\debug\\app-debug.apk ..\\ManteTiendas.apk",
     "lint": "oxlint",
     "preview": "vite preview"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
+    "@capacitor/app": "^8.0.2",
     "@capacitor/core": "^8.4.2",
     "@capacitor/local-notifications": "^8.2.1",
     "@capacitor/push-notifications": "^8.1.2",
