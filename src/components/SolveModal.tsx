@@ -3,12 +3,12 @@ import type { Case } from '../types';
 
 interface SolveModalProps {
   show: boolean;
-  selectedCase: Case | null;
+  selectedCase?: Case | null | undefined;
   solveEvidenceFiles: string[];
   handleSolveEvidenceChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   setSolveEvidenceFiles: React.Dispatch<React.SetStateAction<string[]>>;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: (e?: any) => void;
 }
 
 export const SolveModal: React.FC<SolveModalProps> = ({
