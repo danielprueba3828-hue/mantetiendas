@@ -1,12 +1,11 @@
 import React from 'react';
-import type { Case, User } from '../types';
+import type { User } from '../types';
 import type { SupervisorBillingData } from '../billing';
 import { getSupervisorBillingProfile } from '../billing';
 
 interface FacturacionModalProps {
   show: boolean;
   facturacionCasoId: number | null;
-  cases: Case[];
   currentUser: User | null;
   billingProfiles: Record<string, SupervisorBillingData>;
   setBillingProfiles: React.Dispatch<React.SetStateAction<Record<string, SupervisorBillingData>>>;
@@ -33,11 +32,9 @@ interface FacturacionModalProps {
 export const FacturacionModal: React.FC<FacturacionModalProps> = ({
   show,
   facturacionCasoId,
-  cases,
   currentUser,
   billingProfiles,
-  setBillingProfiles,
-  facturacionProfileMode,
+    facturacionProfileMode,
   setFacturacionProfileMode,
   facturacionRuc,
   setFacturacionRuc,
@@ -58,9 +55,7 @@ export const FacturacionModal: React.FC<FacturacionModalProps> = ({
 }) => {
   if (!show) return null;
 
-  const currentCase = cases.find(c => c.id === facturacionCasoId);
-
-  return (
+    return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-sheet" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
