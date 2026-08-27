@@ -527,7 +527,8 @@ export const DEFAULT_USERS: User[] = [
   {
     "id": 45,
     "nombre": "Local TAF CONDADO (FCO1)",
-    "correo": "刺激FCO1_2026".replace('刺激', ''),
+    "correo": "fco1@marathonsports.com",
+    "usuario": "FCO1_2026",
     "contrasena": "FCO1*2026*",
     "rol": "jefe_tienda",
     "tiendaId": 38,
