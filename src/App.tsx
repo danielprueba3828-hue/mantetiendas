@@ -3364,21 +3364,57 @@ export default function App() {
     }
   };
 
+  const isStoreVisibleToUser = (s: Store, user: User | null): boolean => {
+    if (!user) return false;
+    if (user.rol === 'jefe_tienda' || user.rol === 'subjefe') {
+      return s.id === user.tiendaId;
+    }
+    if (user.rol === 'supervisor') {
+      if (user.supervisorTiendas && Array.isArray(user.supervisorTiendas) && user.supervisorTiendas.includes(s.id)) {
+        return true;
+      }
+      if (s.supervisorName && user.nombre && s.supervisorName.toLowerCase().trim() === user.nombre.toLowerCase().trim()) {
+        return true;
+      }
+      return false;
+    }
+    return true; // tecnico, administrador, gerente
+  };
+
+  const isCaseVisibleToUser = (c: Case, user: User | null): boolean => {
+    if (!user) return false;
+    if (user.rol === 'jefe_tienda' || user.rol === 'subjefe') {
+      return c.tiendaId === user.tiendaId;
+    }
+    if (user.rol === 'supervisor') {
+      if (user.supervisorTiendas && Array.isArray(user.supervisorTiendas) && user.supervisorTiendas.includes(c.tiendaId)) {
+        return true;
+      }
+      const storeObj = stores.find(s => s.id === c.tiendaId);
+      if (storeObj && storeObj.supervisorName && user.nombre && storeObj.supervisorName.toLowerCase().trim() === user.nombre.toLowerCase().trim()) {
+        return true;
+      }
+      return false;
+    }
+    return true; // tecnico, administrador, gerente
+  };
+
   const getCaseDisplayCode = (c: Case): string => {
     if (!c.fechaCreacion) return c.id.toString();
     const dateObj = new Date(c.fechaCreacion);
     const month = String(dateObj.getMonth() + 1).padStart(2, '0');
     const year = String(dateObj.getFullYear()).slice(-2);
     
-    const casesInSameMonth = cases
+    // Conteo correlativo individual e independiente por tienda para cada mes
+    const casesInSameMonthAndStore = cases
       .filter(other => {
-        if (!other.fechaCreacion) return false;
+        if (!other.fechaCreacion || other.tiendaId !== c.tiendaId) return false;
         const oDate = new Date(other.fechaCreacion);
         return oDate.getMonth() === dateObj.getMonth() && oDate.getFullYear() === dateObj.getFullYear();
       })
       .sort((a, b) => new Date(a.fechaCreacion).getTime() - new Date(b.fechaCreacion).getTime());
       
-    const seqNumber = casesInSameMonth.findIndex(other => other.id === c.id) + 1;
+    const seqNumber = casesInSameMonthAndStore.findIndex(other => other.id === c.id) + 1;
     return `${month}${year}-${seqNumber || 1}`;
   };
 
@@ -3389,37 +3425,10 @@ export default function App() {
     return new Date() > new Date(c.fechaLimiteSla);
   };
 
-  // Filtering list
-    const isCaseVisibleToUser = (c: Case, user: User | null): boolean => {
-    if (!user) return false;
-    if (user.rol === 'jefe_tienda' || user.rol === 'subjefe') {
-      return c.tiendaId === user.tiendaId;
-    }
-    if (user.rol === 'supervisor') {
-      if (user.supervisorTiendas && user.supervisorTiendas.includes(c.tiendaId)) return true;
-      const storeObj = stores.find(s => s.id === c.tiendaId);
-      if (storeObj && storeObj.supervisorName && storeObj.supervisorName.toLowerCase().trim() === user.nombre.toLowerCase().trim()) return true;
-      return false;
-    }
-    return true;
-  };
+  const userVisibleCases = cases.filter(c => isCaseVisibleToUser(c, currentUser));
 
   const getFilteredCases = (): Case[] => {
-    let list = [...cases];
-
-    if (currentUser?.rol === 'jefe_tienda' || currentUser?.rol === 'subjefe') {
-      if (currentUser?.tiendaId) { list = list.filter(c => c.tiendaId === currentUser.tiendaId); }
-    } else if (currentUser?.rol === 'supervisor') {
-      // Filtrado estricto por supervisor a cargo de la tienda
-      list = list.filter(c => {
-        // Coincidencia 1: ID de tienda en su lista de tiendas supervisadas
-        if (currentUser.supervisorTiendas && currentUser.supervisorTiendas.includes(c.tiendaId)) return true;
-        // Coincidencia 2: Nombre del supervisor registrado en el objeto de la tienda
-        const storeObj = stores.find(s => s.id === c.tiendaId);
-        if (storeObj && storeObj.supervisorName && storeObj.supervisorName.toLowerCase().trim() === currentUser.nombre.toLowerCase().trim()) return true;
-        return false;
-      });
-    }
+    let list = cases.filter(c => isCaseVisibleToUser(c, currentUser));
 
     if (statusFilter === 'pendiente') {
       list = list.filter(c => c.estado === 'pendiente');
@@ -3439,6 +3448,7 @@ export default function App() {
       const q = searchTerm.toLowerCase();
       list = list.filter(c => 
         c.id.toString().includes(q) || 
+        getCaseDisplayCode(c).toLowerCase().includes(q) ||
         c.descripcion.toLowerCase().includes(q) || 
         c.categoria.toLowerCase().includes(q)
       );
@@ -4923,8 +4933,15 @@ export default function App() {
         return false;
       }
 
-      // 2. SUPERVISOR: solo 3 eventos (Creación de Caso, Petición de Materiales, y Culminación de Caso)
+      // 2. SUPERVISOR: solo 3 eventos de sus tiendas supervisadas (Creación de Caso, Petición de Materiales, y Culminación de Caso)
       if (currentUser.rol === 'supervisor') {
+        if (n.tiendaId) {
+          const storeObj = stores.find(s => s.id === n.tiendaId);
+          const isStoreAssigned = (currentUser.supervisorTiendas && currentUser.supervisorTiendas.includes(n.tiendaId)) ||
+            (storeObj && storeObj.supervisorName && storeObj.supervisorName.toLowerCase().trim() === currentUser.nombre.toLowerCase().trim());
+          if (!isStoreAssigned) return false;
+        }
+
         // A) Creación de Caso
         if (n.tipo === 'nuevo_caso') return true;
 
@@ -5212,7 +5229,7 @@ export default function App() {
                     onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('todos'); setIsMobileSidebarOpen(false); }}
                   >
                     <span>📄 Todos los Casos</span>
-                    <span className="sidebar-count-pill">{cases.length}</span>
+                    <span className="sidebar-count-pill">{userVisibleCases.length}</span>
                   </div>
                 </li>
 
@@ -5222,7 +5239,7 @@ export default function App() {
                     onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('pendiente'); setIsMobileSidebarOpen(false); }}
                   >
                     <span>⏳ Pendientes</span>
-                    <span className="sidebar-count-pill">{cases.filter(c => c.estado === 'pendiente').length}</span>
+                    <span className="sidebar-count-pill">{userVisibleCases.filter(c => c.estado === 'pendiente').length}</span>
                   </div>
                 </li>
 
@@ -5232,7 +5249,7 @@ export default function App() {
                     onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('en_proceso'); setIsMobileSidebarOpen(false); }}
                   >
                     <span>⚡ En Proceso</span>
-                    <span className="sidebar-count-pill">{cases.filter(c => c.estado === 'en_proceso').length}</span>
+                    <span className="sidebar-count-pill">{userVisibleCases.filter(c => c.estado === 'en_proceso' && !c.pausado_por_material).length}</span>
                   </div>
                 </li>
 
@@ -5243,7 +5260,7 @@ export default function App() {
                   >
                     <span>⏸️ Pausados por Material</span>
                     <span className="sidebar-count-pill" style={{ background: 'rgba(234, 179, 8, 0.2)', color: '#D97706' }}>
-                      {cases.filter(c => c.pausado_por_material).length}
+                      {userVisibleCases.filter(c => Boolean(c.pausado_por_material) && c.estado !== 'concluido' && c.estado !== 'cerrado').length}
                     </span>
                   </div>
                 </li>
@@ -5254,7 +5271,7 @@ export default function App() {
                     onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('completado'); setIsMobileSidebarOpen(false); }}
                   >
                     <span>✅ Completados</span>
-                    <span className="sidebar-count-pill">{cases.filter(c => c.estado === 'concluido' || c.estado === 'cerrado').length}</span>
+                    <span className="sidebar-count-pill">{userVisibleCases.filter(c => c.estado === 'concluido' || c.estado === 'cerrado').length}</span>
                   </div>
                 </li>
               </ul>
@@ -5278,7 +5295,7 @@ export default function App() {
                     >
                       <span>⚡ Actividad En Tienda (En Curso)</span>
                       <span className="sidebar-count-pill" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10B981' }}>
-                        {cases.filter(c => (c.estado === 'en_proceso' || c.hora_entrada) && !c.hora_salida && c.estado !== 'concluido' && c.estado !== 'cerrado').length}
+                        {userVisibleCases.filter(c => (c.estado === 'en_proceso' || c.hora_entrada) && !c.hora_salida && c.estado !== 'concluido' && c.estado !== 'cerrado').length}
                       </span>
                     </div>
                   </li>
@@ -5291,7 +5308,7 @@ export default function App() {
                   >
                     <span>✅ Trabajos Concluidos y Salidas</span>
                     <span className="sidebar-count-pill">
-                      {cases.filter(c => c.estado === 'concluido' || c.estado === 'cerrado' || Boolean(c.hora_salida)).length}
+                      {userVisibleCases.filter(c => c.estado === 'concluido' || c.estado === 'cerrado' || Boolean(c.hora_salida)).length}
                     </span>
                   </div>
                 </li>
@@ -5303,7 +5320,7 @@ export default function App() {
                   >
                     <span>📅 Agenda y Turnos Programados</span>
                     <span className="sidebar-count-pill" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#3B82F6' }}>
-                      {cases.filter(c => Boolean(c.fecha_programada) && c.estado !== 'concluido' && c.estado !== 'cerrado' && isCaseVisibleToUser(c, currentUser)).length}
+                      {userVisibleCases.filter(c => Boolean(c.fecha_programada) && c.estado !== 'concluido' && c.estado !== 'cerrado').length}
                     </span>
                   </div>
                 </li>
@@ -6267,6 +6284,7 @@ export default function App() {
                   {/* BARRA COMPACTA DE RESUMEN EN VIVO Y FILTROS */}
                   {(() => {
                     const activeCases = cases.filter(c => {
+                      if (!isCaseVisibleToUser(c, currentUser)) return false;
                       const isDone = c.estado === 'concluido' || c.estado === 'cerrado' || Boolean(c.hora_salida);
                       if (isDone) return false;
                       return c.es_caso_tecnico || c.tecnicoAsignadoId || c.tecnico_presencial_nombre || c.hora_entrada || c.estado === 'en_proceso';
@@ -6291,7 +6309,7 @@ export default function App() {
                             style={{ padding: '4px 8px', fontSize: '0.75rem', height: '30px', width: 'auto' }}
                           >
                             <option value="todas">🏬 Todas las Tiendas</option>
-                            {stores.map(s => (
+                            {stores.filter(s => isStoreVisibleToUser(s, currentUser)).map(s => (
                               <option key={s.id} value={s.id}>{s.nombre}</option>
                             ))}
                           </select>
@@ -6316,6 +6334,7 @@ export default function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {(() => {
                       const activeCases = cases.filter(c => {
+                        if (!isCaseVisibleToUser(c, currentUser)) return false;
                         const isDone = c.estado === 'concluido' || c.estado === 'cerrado' || Boolean(c.hora_salida);
                         if (isDone) return false;
 
@@ -6421,7 +6440,7 @@ export default function App() {
                         style={{ padding: '4px 8px', fontSize: '0.75rem', height: '30px', width: 'auto' }}
                       >
                         <option value="todas">🏬 Todas las Tiendas</option>
-                        {stores.filter(s => currentUser.rol === 'supervisor' ? (currentUser.supervisorTiendas && currentUser.supervisorTiendas.includes(s.id)) : true).map(s => (
+                        {stores.filter(s => isStoreVisibleToUser(s, currentUser)).map(s => (
                           <option key={s.id} value={s.id}>{s.nombre}</option>
                         ))}
                       </select>
@@ -6444,6 +6463,7 @@ export default function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {(() => {
                       const completedCases = cases.filter(c => {
+                        if (!isCaseVisibleToUser(c, currentUser)) return false;
                         const isDone = c.estado === 'concluido' || c.estado === 'cerrado' || Boolean(c.hora_salida);
                         if (!isDone) return false;
 
@@ -6782,7 +6802,7 @@ export default function App() {
                         >
                           <option value="todos">🏬 Todas las Tiendas</option>
                           {stores
-                            .filter(s => currentUser?.rol !== 'supervisor' || !currentUser.supervisorTiendas || currentUser.supervisorTiendas.includes(s.id))
+                            .filter(s => isStoreVisibleToUser(s, currentUser))
                             .map(s => (
                               <option key={s.id} value={s.id}>{s.nombre}</option>
                             ))}
