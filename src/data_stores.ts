@@ -1,3 +1,2 @@
-import type { Store, User } from './types';
-
-// Stores and Users data for ManteTiendas
+export * from './data_stores_list';
+export * from './data_users_list';
