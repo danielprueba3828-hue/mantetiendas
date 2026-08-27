@@ -150,11 +150,10 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 style={{ fontSize: '0.82rem', padding: '6px 10px' }}
               >
                 <option value="todos">Todos los Roles</option>
-                <option value="administrador">Administradores</option>
-                <option value="supervisor">Supervisores</option>
-                <option value="jefe_tienda">Jefes de Tienda</option>
-                <option value="subjefe">Subjefes de Tienda</option>
-                <option value="tecnico">Técnicos</option>
+                <option value="administrador">Administrador</option>
+                <option value="supervisor">Supervisor</option>
+                <option value="jefe_tienda">Tiendas / Locales</option>
+                <option value="tecnico">Técnico</option>
               </select>
               <select
                 value={adminSupervisorFilter}
@@ -243,10 +242,10 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     className="custom-select"
                     style={{ width: '100%', fontSize: '0.82rem', padding: '8px' }}
                   >
-                    <option value="jefe_tienda">Jefe de Tienda</option>
-                    <option value="subjefe">Subjefe de Tienda</option>
-                    <option value="supervisor">Supervisor de Zona</option>
+                    <option value="jefe_tienda">Tienda / Local</option>
+                    <option value="supervisor">Supervisor</option>
                     <option value="tecnico">Técnico Operativo</option>
+                    <option value="administrador">Administrador</option>
                   </select>
                 </div>
 
@@ -295,7 +294,13 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 <tbody>
                   {users
                     .filter(u => {
-                      if (adminRoleFilter !== 'todos' && u.rol !== adminRoleFilter) return false;
+                      if (adminRoleFilter !== 'todos') {
+                        if (adminRoleFilter === 'jefe_tienda') {
+                          if (u.rol !== 'jefe_tienda' && u.rol !== 'subjefe') return false;
+                        } else if (u.rol !== adminRoleFilter) {
+                          return false;
+                        }
+                      }
                       if (adminSupervisorFilter !== 'todos') {
                         const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
                         if (supObj) {
@@ -318,13 +323,38 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                           <td style={{ padding: '12px 14px' }}>{u.nombre}</td>
                           <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>{u.correo}</td>
                           <td style={{ padding: '12px 14px' }}>
-                            <span className="badge badge-secondary" style={{ fontSize: '0.72rem' }}>{u.rol.toUpperCase()}</span>
+                            <span className="badge badge-secondary" style={{ fontSize: '0.72rem', fontWeight: 700 }}>
+                              {u.rol === 'jefe_tienda' || u.rol === 'subjefe' ? 'TIENDA / LOCAL' :
+                               u.rol === 'supervisor' ? 'SUPERVISOR' :
+                               u.rol === 'tecnico' ? 'TÉCNICO' :
+                               u.rol === 'administrador' ? 'ADMINISTRADOR' : String(u.rol).toUpperCase()}
+                            </span>
                           </td>
                           <td style={{ padding: '12px 14px' }}>
                             {u.rol === 'supervisor' ? (
-                              <span style={{ fontSize: '0.75rem', color: 'var(--primary)', fontWeight: 600 }}>
-                                {u.supervisorTiendas ? `${u.supervisorTiendas.length} Tiendas Asignadas` : 'Todas las Tiendas'}
-                              </span>
+                              <button
+                                type="button"
+                                style={{
+                                  fontSize: '0.75rem',
+                                  color: 'var(--primary)',
+                                  fontWeight: 700,
+                                  background: 'rgba(59, 130, 246, 0.1)',
+                                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                                onClick={() => {
+                                  setAdminSupervisorFilter(u.nombre);
+                                  setAdminSectionTab('tiendas');
+                                }}
+                                title="Click para ver solo las tiendas asignadas a este supervisor"
+                              >
+                                🏢 {u.supervisorTiendas ? `${u.supervisorTiendas.length} Tiendas Asignadas` : 'Todas las Tiendas'} →
+                              </button>
                             ) : store ? (
                               store.nombre
                             ) : (
@@ -376,13 +406,26 @@ export const AdminTab: React.FC<AdminTabProps> = ({
         /* SECCIÓN GESTIÓN DE TIENDAS */
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-            <input
-              type="text"
-              placeholder="🔍 Buscar tienda por nombre, ciudad o dirección..."
-              value={adminStoreSearch}
-              onChange={e => setAdminStoreSearch(e.target.value)}
-              style={{ flex: 1, minWidth: '220px', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem' }}
-            />
+            <div style={{ display: 'flex', gap: '8px', flex: 1, minWidth: '280px', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                placeholder="🔍 Buscar tienda por nombre, ciudad o dirección..."
+                value={adminStoreSearch}
+                onChange={e => setAdminStoreSearch(e.target.value)}
+                style={{ flex: 1, minWidth: '180px', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem' }}
+              />
+              <select
+                value={adminSupervisorFilter}
+                onChange={e => setAdminSupervisorFilter(e.target.value)}
+                className="custom-select"
+                style={{ fontSize: '0.82rem', padding: '6px 10px' }}
+              >
+                <option value="todos">Todos los Supervisores</option>
+                {users.filter(u => u.rol === 'supervisor' && u.estado).map(sup => (
+                  <option key={sup.id} value={sup.nombre}>{sup.nombre}</option>
+                ))}
+              </select>
+            </div>
             <button
               type="button"
               className="btn btn-primary"
@@ -453,6 +496,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     <th style={{ padding: '12px 14px' }}>ID</th>
                     <th style={{ padding: '12px 14px' }}>Nombre</th>
                     <th style={{ padding: '12px 14px' }}>Ciudad</th>
+                    <th style={{ padding: '12px 14px' }}>Supervisor Encargado</th>
                     <th style={{ padding: '12px 14px' }}>Dirección</th>
                     <th style={{ padding: '12px 14px', textAlign: 'right' }}>Acciones</th>
                   </tr>
@@ -460,40 +504,59 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 <tbody>
                   {stores
                     .filter(s => {
+                      if (adminSupervisorFilter !== 'todos') {
+                        const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
+                        if (supObj) {
+                          const assignedStores = getStoresForSupervisor(supObj.nombre, stores, users);
+                          if (!assignedStores.some((as: Store) => as.id === s.id)) return false;
+                        }
+                      }
                       if (adminStoreSearch.trim()) {
                         const q = adminStoreSearch.toLowerCase();
                         return s.nombre.toLowerCase().includes(q) || (s.ciudad && s.ciudad.toLowerCase().includes(q)) || (s.direccion && s.direccion.toLowerCase().includes(q));
                       }
                       return true;
                     })
-                    .map(s => (
-                      <tr key={s.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                        <td style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--primary)' }}>#{s.id}</td>
-                        <td style={{ padding: '12px 14px', fontWeight: 600 }}>{s.nombre}</td>
-                        <td style={{ padding: '12px 14px' }}>{s.ciudad || 'N/A'}</td>
-                        <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>{s.direccion || 'N/A'}</td>
-                        <td style={{ padding: '12px 14px', textAlign: 'right' }}>
-                          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              style={{ fontSize: '0.75rem', padding: '4px 8px' }}
-                              onClick={() => handleStartEditStore(s)}
-                            >
-                              ✏️
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-danger btn-sm"
-                              style={{ fontSize: '0.75rem', padding: '4px 8px' }}
-                              onClick={() => handleAdminDeleteStore(s.id)}
-                            >
-                              🗑️
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    .map(s => {
+                      const storeSup = users.find(u => u.rol === 'supervisor' && ((u.supervisorTiendas && u.supervisorTiendas.includes(s.id)) || (s.supervisorName && u.nombre.toLowerCase().trim() === s.supervisorName.toLowerCase().trim())));
+                      return (
+                        <tr key={s.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                          <td style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--primary)' }}>#{s.id}</td>
+                          <td style={{ padding: '12px 14px', fontWeight: 600 }}>{s.nombre}</td>
+                          <td style={{ padding: '12px 14px' }}>{s.ciudad || 'N/A'}</td>
+                          <td style={{ padding: '12px 14px' }}>
+                            {storeSup ? (
+                              <span style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 600 }}>👤 {storeSup.nombre}</span>
+                            ) : s.supervisorName ? (
+                              <span style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 600 }}>👤 {s.supervisorName}</span>
+                            ) : (
+                              <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Sin asignar</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>{s.direccion || 'N/A'}</td>
+                          <td style={{ padding: '12px 14px', textAlign: 'right' }}>
+                            <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                style={{ fontSize: '0.75rem', padding: '4px 8px' }}
+                                onClick={() => handleStartEditStore(s)}
+                              >
+                                ✏️
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-danger btn-sm"
+                                style={{ fontSize: '0.75rem', padding: '4px 8px' }}
+                                onClick={() => handleAdminDeleteStore(s.id)}
+                              >
+                                🗑️
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                 </tbody>
               </table>
             </div>
