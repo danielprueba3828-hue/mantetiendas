@@ -6,7 +6,7 @@ interface NewTechCaseModalProps {
   show: boolean;
   currentUser: User | null;
   stores: Store[];
-  categories: string[];
+  categories: { id: number; nombre: string; prioridadSugerida: number; }[];
   techCaseStoreId: number;
   setTechCaseStoreId: (val: number) => void;
   techCaseCategory: string;
@@ -71,7 +71,7 @@ export const NewTechCaseModal: React.FC<NewTechCaseModalProps> = ({
             >
               <option value="">-- Seleccionar Categoría --</option>
               {categories.map(cat => (
-                <option key={cat} value={cat}>{cat}</option>
+                <option key={cat.id} value={cat.nombre}>{cat.nombre}</option>
               ))}
             </select>
           </div>
