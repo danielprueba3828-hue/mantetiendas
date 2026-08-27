@@ -1,6 +1,5 @@
 import React from 'react';
 import type { Store, User } from '../types';
-import { getStoresForSupervisor } from '../helpers';
 
 interface AdminTabProps {
   adminSectionTab: 'usuarios' | 'tiendas';
@@ -19,7 +18,6 @@ interface AdminTabProps {
   setAdminStoreSearch: (val: string) => void;
   users: User[];
   stores: Store[];
-  // User Form State
   editingUserId: number | null;
   admName: string;
   setAdmName: (val: string) => void;
@@ -29,16 +27,15 @@ interface AdminTabProps {
   setAdmUsername: (val: string) => void;
   admContrasena: string;
   setAdmContrasena: (val: string) => void;
-  admRole: 'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico';
-  setAdmRole: (val: 'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico') => void;
+  admRole: 'administrador' | 'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico';
+  setAdmRole: (val: 'administrador' | 'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico') => void;
   admTiendaNombre: string;
   setAdmTiendaNombre: (val: string) => void;
   handleAdminUserSubmit: (e: React.FormEvent) => void;
   handleStartEditUser: (u: User) => void;
   handleCancelEditUser: () => void;
-  handleAdminDeleteUser: (id: number) => void;
-  handleAdminToggleUser: (id: number) => void;
-  // Store Form State
+  handleAdminDeleteUser: (userId: number) => void;
+  handleAdminToggleUser: (userId: number) => void;
   editingStoreId: number | null;
   newStoreName: string;
   setNewStoreName: (val: string) => void;
@@ -49,7 +46,7 @@ interface AdminTabProps {
   handleAdminStoreSubmit: (e: React.FormEvent) => void;
   handleStartEditStore: (s: Store) => void;
   handleCancelEditStore: () => void;
-  handleAdminDeleteStore: (id: number) => void;
+  handleAdminDeleteStore: (storeId: number) => void;
 }
 
 export const AdminTab: React.FC<AdminTabProps> = ({
@@ -99,91 +96,146 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   handleCancelEditStore,
   handleAdminDeleteStore
 }) => {
+  const filteredUsers = users.filter(u => {
+    if (adminRoleFilter !== 'todos') {
+      if (adminRoleFilter === 'jefe_tienda') {
+        if (u.rol !== 'jefe_tienda' && u.rol !== 'subjefe') return false;
+      } else if (u.rol !== adminRoleFilter) {
+        return false;
+      }
+    }
+    if (adminSupervisorFilter !== 'todos') {
+      const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
+      if (supObj) {
+        if (u.rol === 'supervisor' && u.nombre !== adminSupervisorFilter) return false;
+        const assignedIds = supObj.supervisorTiendas || [];
+        if (u.tiendaId && !assignedIds.includes(u.tiendaId)) return false;
+      }
+    }
+    if (adminUserSearch.trim()) {
+      const q = adminUserSearch.toLowerCase();
+      return (
+        u.nombre.toLowerCase().includes(q) ||
+        u.usuario.toLowerCase().includes(q) ||
+        u.correo.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
+  const filteredStores = stores.filter(s => {
+    if (adminSupervisorFilter !== 'todos') {
+      const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
+      if (supObj) {
+        const assignedIds = supObj.supervisorTiendas || [];
+        const isByName = s.supervisorName && s.supervisorName.toLowerCase().trim() === supObj.nombre.toLowerCase().trim();
+        if (!assignedIds.includes(s.id) && !isByName) return false;
+      }
+    }
+    if (adminStoreSearch.trim()) {
+      const q = adminStoreSearch.toLowerCase();
+      return (
+        s.nombre.toLowerCase().includes(q) ||
+        (s.ciudad && s.ciudad.toLowerCase().includes(q)) ||
+        (s.direccion && s.direccion.toLowerCase().includes(q))
+      );
+    }
+    return true;
+  });
+
   return (
     <div className="view-container animate-fade">
-      <div className="view-header" style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+      {/* Header */}
+      <div className="view-header" style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span>⚙️</span> Panel de Administración y Configuración
+          <h2 style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--text-main)', margin: 0, fontFamily: 'Outfit, sans-serif', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>⚙️</span> Panel de Administración
           </h2>
-          <p style={{ margin: '4px 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            Gestión integral de usuarios del sistema, asignación de tiendas y catálogos de sucursales
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>
+            Control central de accesos, roles, técnicos y red nacional de tiendas.
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button 
-            type="button"
-            className={`btn ${adminSectionTab === 'usuarios' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ fontSize: '0.82rem', fontWeight: 700 }}
-            onClick={() => setAdminSectionTab('usuarios')}
-          >
-            👥 Gestión de Usuarios
-          </button>
-          <button 
-            type="button"
-            className={`btn ${adminSectionTab === 'tiendas' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ fontSize: '0.82rem', fontWeight: 700 }}
-            onClick={() => setAdminSectionTab('tiendas')}
-          >
-            🏬 Gestión de Tiendas
-          </button>
+        <div>
+          {adminSectionTab === 'usuarios' ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                if (showAdminUserForm) handleCancelEditUser();
+                setShowAdminUserForm(!showAdminUserForm);
+              }}
+              style={{ fontWeight: 700, fontSize: '0.84rem', padding: '9px 18px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              {showAdminUserForm ? '✕ Cerrar Formulario' : '➕ Nuevo Usuario'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                if (showAdminStoreForm) handleCancelEditStore();
+                setShowAdminStoreForm(!showAdminStoreForm);
+              }}
+              style={{ fontWeight: 700, fontSize: '0.84rem', padding: '9px 18px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              {showAdminStoreForm ? '✕ Cerrar Formulario' : '➕ Nueva Tienda'}
+            </button>
+          )}
         </div>
+      </div>
+
+      {/* 4 Metric Stat Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+        <div className="detail-card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '2px', borderLeft: '4px solid #1e40af', background: 'var(--bg-card)', borderRadius: '12px', boxShadow: 'var(--shadow-sm)' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Total Usuarios</span>
+          <strong style={{ fontSize: '1.3rem', color: 'var(--text-main)', fontFamily: 'Outfit, sans-serif' }}>{users.length}</strong>
+        </div>
+        <div className="detail-card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '2px', borderLeft: '4px solid #3b82f6', background: 'var(--bg-card)', borderRadius: '12px', boxShadow: 'var(--shadow-sm)' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Supervisores</span>
+          <strong style={{ fontSize: '1.3rem', color: '#3b82f6', fontFamily: 'Outfit, sans-serif' }}>{users.filter(u => u.rol === 'supervisor').length}</strong>
+        </div>
+        <div className="detail-card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '2px', borderLeft: '4px solid #10b981', background: 'var(--bg-card)', borderRadius: '12px', boxShadow: 'var(--shadow-sm)' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Técnicos</span>
+          <strong style={{ fontSize: '1.3rem', color: '#10b981', fontFamily: 'Outfit, sans-serif' }}>{users.filter(u => u.rol === 'tecnico').length}</strong>
+        </div>
+        <div className="detail-card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '2px', borderLeft: '4px solid #f59e0b', background: 'var(--bg-card)', borderRadius: '12px', boxShadow: 'var(--shadow-sm)' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Tiendas de la Red</span>
+          <strong style={{ fontSize: '1.3rem', color: '#f59e0b', fontFamily: 'Outfit, sans-serif' }}>{stores.length}</strong>
+        </div>
+      </div>
+
+      {/* Tabs Switcher: Cuentas y Accesos vs Tiendas y Locales */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '16px' }}>
+        <button
+          type="button"
+          className={`btn ${adminSectionTab === 'usuarios' ? 'btn-primary' : 'btn-secondary'}`}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '0.86rem', fontWeight: 700, padding: '10px', borderRadius: '12px' }}
+          onClick={() => setAdminSectionTab('usuarios')}
+        >
+          <span>👤 Cuentas y Accesos</span>
+          <span style={{ background: adminSectionTab === 'usuarios' ? 'rgba(255,255,255,0.25)' : 'var(--bg-surface)', padding: '2px 8px', borderRadius: '999px', fontSize: '0.72rem' }}>
+            {users.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          className={`btn ${adminSectionTab === 'tiendas' ? 'btn-primary' : 'btn-secondary'}`}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '0.86rem', fontWeight: 700, padding: '10px', borderRadius: '12px' }}
+          onClick={() => setAdminSectionTab('tiendas')}
+        >
+          <span>🏬 Tiendas y Locales</span>
+          <span style={{ background: adminSectionTab === 'tiendas' ? 'rgba(255,255,255,0.25)' : 'var(--bg-surface)', padding: '2px 8px', borderRadius: '999px', fontSize: '0.72rem' }}>
+            {stores.length}
+          </span>
+        </button>
       </div>
 
       {adminSectionTab === 'usuarios' ? (
         <div>
-          {/* Barra de Filtros y Acciones */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', gap: '8px', flex: 1, minWidth: '280px', flexWrap: 'wrap' }}>
-              <input
-                type="text"
-                placeholder="🔍 Buscar por nombre, usuario o correo..."
-                value={adminUserSearch}
-                onChange={e => setAdminUserSearch(e.target.value)}
-                style={{ flex: 1, minWidth: '180px', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem' }}
-              />
-              <select
-                value={adminRoleFilter}
-                onChange={e => setAdminRoleFilter(e.target.value)}
-                className="custom-select"
-                style={{ fontSize: '0.82rem', padding: '6px 10px' }}
-              >
-                <option value="todos">Todos los Roles</option>
-                <option value="administrador">Administrador</option>
-                <option value="supervisor">Supervisor</option>
-                <option value="jefe_tienda">Tiendas / Locales</option>
-                <option value="tecnico">Técnico</option>
-              </select>
-              <select
-                value={adminSupervisorFilter}
-                onChange={e => setAdminSupervisorFilter(e.target.value)}
-                className="custom-select"
-                style={{ fontSize: '0.82rem', padding: '6px 10px' }}
-              >
-                <option value="todos">Todos los Supervisores</option>
-                {users.filter(u => u.rol === 'supervisor' && u.estado).map(sup => (
-                  <option key={sup.id} value={sup.nombre}>{sup.nombre}</option>
-                ))}
-              </select>
-            </div>
-
-            <button
-              type="button"
-              className="btn btn-primary"
-              style={{ fontWeight: 700, fontSize: '0.82rem' }}
-              onClick={() => {
-                setShowAdminUserForm(!showAdminUserForm);
-                if (showAdminUserForm) handleCancelEditUser();
-              }}
-            >
-              {showAdminUserForm ? '✕ Cerrar Formulario' : '➕ Nuevo Usuario'}
-            </button>
-          </div>
-
-          {/* Formulario de Crear / Editar Usuario */}
+          {/* Formulario de Usuario */}
           {showAdminUserForm && (
-            <div className="card animate-fade" style={{ marginBottom: '16px', padding: '16px', border: '1px solid var(--primary-subtle)' }}>
+            <div className="card animate-fade" style={{ marginBottom: '16px', padding: '16px', border: '1px solid var(--primary)', borderRadius: '14px' }}>
               <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: 800 }}>
                 {editingUserId ? '✏️ Modificar Usuario' : '➕ Registrar Nuevo Usuario'}
               </h3>
@@ -196,7 +248,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     value={admName}
                     onChange={e => setAdmName(e.target.value)}
                     placeholder="Ej: Juan Pérez"
-                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
@@ -207,7 +259,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     value={admEmail}
                     onChange={e => setAdmEmail(e.target.value)}
                     placeholder="correo@ejemplo.com"
-                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
@@ -218,7 +270,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     value={admUsername}
                     onChange={e => setAdmUsername(e.target.value)}
                     placeholder="usuario123"
-                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
@@ -231,7 +283,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     value={admContrasena}
                     onChange={e => setAdmContrasena(e.target.value)}
                     placeholder={editingUserId ? 'Dejar en blanco para conservar' : 'Mínimo 6 caracteres'}
-                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
@@ -240,7 +292,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     value={admRole}
                     onChange={e => setAdmRole(e.target.value as any)}
                     className="custom-select"
-                    style={{ width: '100%', fontSize: '0.82rem', padding: '8px' }}
+                    style={{ width: '100%', fontSize: '0.84rem', padding: '8px 12px', borderRadius: '8px' }}
                   >
                     <option value="jefe_tienda">Tienda / Local</option>
                     <option value="supervisor">Supervisor</option>
@@ -256,7 +308,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                       value={admTiendaNombre}
                       onChange={e => setAdmTiendaNombre(e.target.value)}
                       className="custom-select"
-                      style={{ width: '100%', fontSize: '0.82rem', padding: '8px' }}
+                      style={{ width: '100%', fontSize: '0.84rem', padding: '8px 12px', borderRadius: '8px' }}
                     >
                       <option value="">-- Seleccionar Tienda --</option>
                       {stores.map(s => (
@@ -276,171 +328,147 @@ export const AdminTab: React.FC<AdminTabProps> = ({
             </div>
           )}
 
-          {/* Tabla de Usuarios */}
-          <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="custom-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.82rem' }}>
-                <thead>
-                  <tr style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-color)' }}>
-                    <th style={{ padding: '12px 14px' }}>Usuario</th>
-                    <th style={{ padding: '12px 14px' }}>Nombre Completo</th>
-                    <th style={{ padding: '12px 14px' }}>Correo</th>
-                    <th style={{ padding: '12px 14px' }}>Rol</th>
-                    <th style={{ padding: '12px 14px' }}>Tienda / Asignación</th>
-                    <th style={{ padding: '12px 14px' }}>Estado</th>
-                    <th style={{ padding: '12px 14px', textAlign: 'right' }}>Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users
-                    .filter(u => {
-                      if (adminRoleFilter !== 'todos') {
-                        if (adminRoleFilter === 'jefe_tienda') {
-                          if (u.rol !== 'jefe_tienda' && u.rol !== 'subjefe') return false;
-                        } else if (u.rol !== adminRoleFilter) {
-                          return false;
-                        }
-                      }
-                      if (adminSupervisorFilter !== 'todos') {
-                        const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
-                        if (supObj) {
-                          if (u.rol === 'supervisor' && u.nombre !== adminSupervisorFilter) return false;
-                          const assignedStores = getStoresForSupervisor(supObj.nombre, stores, users);
-                          if (u.tiendaId && !assignedStores.some((s: Store) => s.id === u.tiendaId)) return false;
-                        }
-                      }
-                      if (adminUserSearch.trim()) {
-                        const q = adminUserSearch.toLowerCase();
-                        return u.nombre.toLowerCase().includes(q) || u.usuario.toLowerCase().includes(q) || u.correo.toLowerCase().includes(q);
-                      }
-                      return true;
-                    })
-                    .map(u => {
-                      const store = stores.find(s => s.id === u.tiendaId);
-                      return (
-                        <tr key={u.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                          <td style={{ padding: '12px 14px', fontWeight: 700 }}>{u.usuario}</td>
-                          <td style={{ padding: '12px 14px' }}>{u.nombre}</td>
-                          <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>{u.correo}</td>
-                          <td style={{ padding: '12px 14px' }}>
-                            <span className="badge badge-secondary" style={{ fontSize: '0.72rem', fontWeight: 700 }}>
-                              {u.rol === 'jefe_tienda' || u.rol === 'subjefe' ? 'TIENDA / LOCAL' :
-                               u.rol === 'supervisor' ? 'SUPERVISOR' :
-                               u.rol === 'tecnico' ? 'TÉCNICO' :
-                               u.rol === 'administrador' ? 'ADMINISTRADOR' : String(u.rol).toUpperCase()}
-                            </span>
-                          </td>
-                          <td style={{ padding: '12px 14px' }}>
-                            {u.rol === 'supervisor' ? (
-                              <button
-                                type="button"
-                                style={{
-                                  fontSize: '0.75rem',
-                                  color: 'var(--primary)',
-                                  fontWeight: 700,
-                                  background: 'rgba(59, 130, 246, 0.1)',
-                                  border: '1px solid rgba(59, 130, 246, 0.3)',
-                                  padding: '3px 8px',
-                                  borderRadius: '6px',
-                                  cursor: 'pointer',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px'
-                                }}
-                                onClick={() => {
-                                  setAdminSupervisorFilter(u.nombre);
-                                  setAdminSectionTab('tiendas');
-                                }}
-                                title="Click para ver solo las tiendas asignadas a este supervisor"
-                              >
-                                🏢 {u.supervisorTiendas ? `${u.supervisorTiendas.length} Tiendas Asignadas` : 'Todas las Tiendas'} →
-                              </button>
-                            ) : store ? (
-                              store.nombre
-                            ) : (
-                              <span style={{ color: 'var(--text-muted)' }}>N/A</span>
-                            )}
-                          </td>
-                          <td style={{ padding: '12px 14px' }}>
-                            <span className={`badge ${u.estado ? 'badge-success' : 'badge-danger'}`} style={{ fontSize: '0.72rem' }}>
-                              {u.estado ? 'ACTIVO' : 'INACTIVO'}
-                            </span>
-                          </td>
-                          <td style={{ padding: '12px 14px', textAlign: 'right' }}>
-                            <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                style={{ fontSize: '0.75rem', padding: '4px 8px' }}
-                                onClick={() => handleStartEditUser(u)}
-                              >
-                                ✏️
-                              </button>
-                              <button
-                                type="button"
-                                className={`btn ${u.estado ? 'btn-secondary' : 'btn-primary'} btn-sm`}
-                                style={{ fontSize: '0.75rem', padding: '4px 8px' }}
-                                onClick={() => handleAdminToggleUser(u.id)}
-                              >
-                                {u.estado ? '⏸️' : '▶️'}
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn-danger btn-sm"
-                                style={{ fontSize: '0.75rem', padding: '4px 8px' }}
-                                onClick={() => handleAdminDeleteUser(u.id)}
-                              >
-                                🗑️
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-            </div>
+          {/* Filter Chips */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginRight: '4px' }}>Filtrar:</span>
+            <button
+              type="button"
+              className={`filter-chip ${adminRoleFilter === 'todos' ? 'active' : ''}`}
+              onClick={() => setAdminRoleFilter('todos')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'todos' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'todos' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
+            >
+              👥 Todos <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.length}</span>
+            </button>
+            <button
+              type="button"
+              className={`filter-chip ${adminRoleFilter === 'supervisor' ? 'active' : ''}`}
+              onClick={() => setAdminRoleFilter('supervisor')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'supervisor' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'supervisor' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
+            >
+              👔 Supervisores <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.filter(u => u.rol === 'supervisor').length}</span>
+            </button>
+            <button
+              type="button"
+              className={`filter-chip ${adminRoleFilter === 'tecnico' ? 'active' : ''}`}
+              onClick={() => setAdminRoleFilter('tecnico')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'tecnico' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'tecnico' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
+            >
+              👷 Técnicos <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.filter(u => u.rol === 'tecnico').length}</span>
+            </button>
+            <button
+              type="button"
+              className={`filter-chip ${adminRoleFilter === 'jefe_tienda' ? 'active' : ''}`}
+              onClick={() => setAdminRoleFilter('jefe_tienda')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'jefe_tienda' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'jefe_tienda' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
+            >
+              🏬 Tiendas / Locales <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.filter(u => u.rol === 'jefe_tienda' || u.rol === 'subjefe').length}</span>
+            </button>
+            <button
+              type="button"
+              className={`filter-chip ${adminRoleFilter === 'administrador' ? 'active' : ''}`}
+              onClick={() => setAdminRoleFilter('administrador')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'administrador' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'administrador' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
+            >
+              🛡️ Admin <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.filter(u => u.rol === 'administrador').length}</span>
+            </button>
+          </div>
+
+          {/* Search Box */}
+          <div style={{ marginBottom: '14px' }}>
+            <input
+              type="text"
+              placeholder="🔍 Buscar por nombre, usuario..."
+              value={adminUserSearch}
+              onChange={e => setAdminUserSearch(e.target.value)}
+              style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.85rem', boxSizing: 'border-box' }}
+            />
+          </div>
+
+          {/* User Cards List */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {filteredUsers.map(u => {
+              const store = stores.find(s => s.id === u.tiendaId);
+              const roleIcon = u.rol === 'administrador' ? '🛡️' : u.rol === 'supervisor' ? '👔' : u.rol === 'tecnico' ? '👷' : '🏬';
+              const roleLabel = u.rol === 'administrador' ? 'ADMINISTRADOR' : u.rol === 'supervisor' ? 'SUPERVISOR' : u.rol === 'tecnico' ? 'TÉCNICO' : 'TIENDA / LOCAL';
+              const roleBadgeBg = u.rol === 'administrador' ? 'rgba(139, 92, 246, 0.12)' : u.rol === 'supervisor' ? 'rgba(59, 130, 246, 0.12)' : u.rol === 'tecnico' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)';
+              const roleBadgeColor = u.rol === 'administrador' ? '#7c3aed' : u.rol === 'supervisor' ? '#2563eb' : u.rol === 'tecnico' ? '#059669' : '#d97706';
+
+              return (
+                <div key={u.id} className="card animate-fade" style={{ padding: '14px 16px', borderRadius: '14px', background: 'var(--bg-card)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-sm)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: roleBadgeBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.25rem' }}>
+                        {roleIcon}
+                      </div>
+                      <div>
+                        <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-main)' }}>{u.nombre}</h4>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>@{u.usuario}</span>
+                      </div>
+                    </div>
+                    <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '0.72rem', fontWeight: 800, background: roleBadgeBg, color: roleBadgeColor, letterSpacing: '0.3px' }}>
+                      {roleLabel}
+                    </span>
+                  </div>
+
+                  <div style={{ margin: '10px 0 0 0', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    <div>✉️ {u.correo}</div>
+                    {u.rol === 'supervisor' ? (
+                      <div 
+                        style={{ color: 'var(--primary)', fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        onClick={() => {
+                          setAdminSupervisorFilter(u.nombre);
+                          setAdminSectionTab('tiendas');
+                        }}
+                      >
+                        🏢 {u.supervisorTiendas ? `${u.supervisorTiendas.length} Tiendas Asignadas` : 'Todas las Tiendas'} →
+                      </div>
+                    ) : store ? (
+                      <div>🏬 {store.nombre}</div>
+                    ) : null}
+                  </div>
+
+                  <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.78rem', fontWeight: 700, color: u.estado ? 'var(--success)' : 'var(--danger)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      {u.estado ? '🟢 Activo' : '🔴 Inactivo'}
+                    </span>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        style={{ fontSize: '0.75rem', padding: '4px 10px', borderRadius: '6px' }}
+                        onClick={() => handleStartEditUser(u)}
+                      >
+                        ✏️ Editar
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        style={{ fontSize: '0.75rem', padding: '4px 10px', borderRadius: '6px' }}
+                        onClick={() => handleAdminToggleUser(u.id)}
+                      >
+                        {u.estado ? 'Desactivar' : 'Activar'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-danger btn-sm"
+                        style={{ fontSize: '0.75rem', padding: '4px 8px', borderRadius: '6px' }}
+                        onClick={() => handleAdminDeleteUser(u.id)}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       ) : (
         /* SECCIÓN GESTIÓN DE TIENDAS */
         <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', gap: '8px', flex: 1, minWidth: '280px', flexWrap: 'wrap' }}>
-              <input
-                type="text"
-                placeholder="🔍 Buscar tienda por nombre, ciudad o dirección..."
-                value={adminStoreSearch}
-                onChange={e => setAdminStoreSearch(e.target.value)}
-                style={{ flex: 1, minWidth: '180px', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem' }}
-              />
-              <select
-                value={adminSupervisorFilter}
-                onChange={e => setAdminSupervisorFilter(e.target.value)}
-                className="custom-select"
-                style={{ fontSize: '0.82rem', padding: '6px 10px' }}
-              >
-                <option value="todos">Todos los Supervisores</option>
-                {users.filter(u => u.rol === 'supervisor' && u.estado).map(sup => (
-                  <option key={sup.id} value={sup.nombre}>{sup.nombre}</option>
-                ))}
-              </select>
-            </div>
-            <button
-              type="button"
-              className="btn btn-primary"
-              style={{ fontWeight: 700, fontSize: '0.82rem' }}
-              onClick={() => {
-                setShowAdminStoreForm(!showAdminStoreForm);
-                if (showAdminStoreForm) handleCancelEditStore();
-              }}
-            >
-              {showAdminStoreForm ? '✕ Cerrar Formulario' : '➕ Nueva Tienda'}
-            </button>
-          </div>
-
+          {/* Formulario de Tienda */}
           {showAdminStoreForm && (
-            <div className="card animate-fade" style={{ marginBottom: '16px', padding: '16px', border: '1px solid var(--primary-subtle)' }}>
+            <div className="card animate-fade" style={{ marginBottom: '16px', padding: '16px', border: '1px solid var(--primary)', borderRadius: '14px' }}>
               <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: 800 }}>
                 {editingStoreId ? '✏️ Modificar Tienda' : '➕ Registrar Nueva Tienda'}
               </h3>
@@ -453,7 +481,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     value={newStoreName}
                     onChange={e => setNewStoreName(e.target.value)}
                     placeholder="Ej: MARATHON MALL DEL SOL"
-                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
@@ -464,7 +492,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     value={newStoreCity}
                     onChange={e => setNewStoreCity(e.target.value)}
                     placeholder="Ej: Guayaquil"
-                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
@@ -474,7 +502,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                     value={newStoreDir}
                     onChange={e => setNewStoreDir(e.target.value)}
                     placeholder="Ej: Av. Juan Tanca Marengo"
-                    style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.82rem', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
                   />
                 </div>
 
@@ -488,78 +516,98 @@ export const AdminTab: React.FC<AdminTabProps> = ({
             </div>
           )}
 
-          <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="custom-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.82rem' }}>
-                <thead>
-                  <tr style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-color)' }}>
-                    <th style={{ padding: '12px 14px' }}>ID</th>
-                    <th style={{ padding: '12px 14px' }}>Nombre</th>
-                    <th style={{ padding: '12px 14px' }}>Ciudad</th>
-                    <th style={{ padding: '12px 14px' }}>Supervisor Encargado</th>
-                    <th style={{ padding: '12px 14px' }}>Dirección</th>
-                    <th style={{ padding: '12px 14px', textAlign: 'right' }}>Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stores
-                    .filter(s => {
-                      if (adminSupervisorFilter !== 'todos') {
-                        const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
-                        if (supObj) {
-                          const assignedStores = getStoresForSupervisor(supObj.nombre, stores, users);
-                          if (!assignedStores.some((as: Store) => as.id === s.id)) return false;
-                        }
-                      }
-                      if (adminStoreSearch.trim()) {
-                        const q = adminStoreSearch.toLowerCase();
-                        return s.nombre.toLowerCase().includes(q) || (s.ciudad && s.ciudad.toLowerCase().includes(q)) || (s.direccion && s.direccion.toLowerCase().includes(q));
-                      }
-                      return true;
-                    })
-                    .map(s => {
-                      const storeSup = users.find(u => u.rol === 'supervisor' && ((u.supervisorTiendas && u.supervisorTiendas.includes(s.id)) || (s.supervisorName && u.nombre.toLowerCase().trim() === s.supervisorName.toLowerCase().trim())));
-                      return (
-                        <tr key={s.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                          <td style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--primary)' }}>#{s.id}</td>
-                          <td style={{ padding: '12px 14px', fontWeight: 600 }}>{s.nombre}</td>
-                          <td style={{ padding: '12px 14px' }}>{s.ciudad || 'N/A'}</td>
-                          <td style={{ padding: '12px 14px' }}>
-                            {storeSup ? (
-                              <span style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 600 }}>👤 {storeSup.nombre}</span>
-                            ) : s.supervisorName ? (
-                              <span style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 600 }}>👤 {s.supervisorName}</span>
-                            ) : (
-                              <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Sin asignar</span>
-                            )}
-                          </td>
-                          <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>{s.direccion || 'N/A'}</td>
-                          <td style={{ padding: '12px 14px', textAlign: 'right' }}>
-                            <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                style={{ fontSize: '0.75rem', padding: '4px 8px' }}
-                                onClick={() => handleStartEditStore(s)}
-                              >
-                                ✏️
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn-danger btn-sm"
-                                style={{ fontSize: '0.75rem', padding: '4px 8px' }}
-                                onClick={() => handleAdminDeleteStore(s.id)}
-                              >
-                                🗑️
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-            </div>
+          {/* Supervisor Filter Chips */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginRight: '4px' }}>Supervisor:</span>
+            <button
+              type="button"
+              className={`filter-chip ${adminSupervisorFilter === 'todos' ? 'active' : ''}`}
+              onClick={() => setAdminSupervisorFilter('todos')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminSupervisorFilter === 'todos' ? '#1e40af' : 'var(--bg-card)', color: adminSupervisorFilter === 'todos' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
+            >
+              Todas las Tiendas <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{stores.length}</span>
+            </button>
+            {users.filter(u => u.rol === 'supervisor' && u.estado).map(sup => {
+              const assignedCount = sup.supervisorTiendas ? sup.supervisorTiendas.length : stores.filter(s => s.supervisorName && s.supervisorName.toLowerCase().trim() === sup.nombre.toLowerCase().trim()).length;
+              const isActive = adminSupervisorFilter === sup.nombre;
+              return (
+                <button
+                  key={sup.id}
+                  type="button"
+                  className={`filter-chip ${isActive ? 'active' : ''}`}
+                  onClick={() => setAdminSupervisorFilter(isActive ? 'todos' : sup.nombre)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: isActive ? '#1e40af' : 'var(--bg-card)', color: isActive ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
+                >
+                  {sup.nombre.replace('(Supervisor)', '').trim()} <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{assignedCount}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Store Search Box */}
+          <div style={{ marginBottom: '14px' }}>
+            <input
+              type="text"
+              placeholder="🔍 Buscar por nombre, código o ciudad..."
+              value={adminStoreSearch}
+              onChange={e => setAdminStoreSearch(e.target.value)}
+              style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.85rem', boxSizing: 'border-box' }}
+            />
+          </div>
+
+          {/* Store Cards List */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {filteredStores.map(s => {
+              const storeSup = users.find(u => u.rol === 'supervisor' && ((u.supervisorTiendas && u.supervisorTiendas.includes(s.id)) || (s.supervisorName && u.nombre.toLowerCase().trim() === s.supervisorName.toLowerCase().trim())));
+              const supDisplayName = storeSup ? storeSup.nombre : s.supervisorName || 'Sin asignar';
+
+              return (
+                <div key={s.id} className="card animate-fade" style={{ padding: '14px 16px', borderRadius: '14px', background: 'var(--bg-card)', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-sm)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: 'rgba(59, 130, 246, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.25rem' }}>
+                        🏬
+                      </div>
+                      <div>
+                        <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-main)' }}>{s.nombre}</h4>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>📍 {s.ciudad || 'Ecuador'}</span>
+                      </div>
+                    </div>
+                    {s.ciudad && (
+                      <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '0.72rem', fontWeight: 700, background: 'rgba(59, 130, 246, 0.1)', color: 'var(--primary)' }}>
+                        {s.ciudad}
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ margin: '10px 0 0 0', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    {s.direccion && <div>📌 {s.direccion}</div>}
+                    <div style={{ color: 'var(--primary)', fontWeight: 600 }}>
+                      👔 Supervisor: {supDisplayName}
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: '0.75rem', padding: '4px 10px', borderRadius: '6px' }}
+                      onClick={() => handleStartEditStore(s)}
+                    >
+                      ✏️ Editar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      style={{ fontSize: '0.75rem', padding: '4px 8px', borderRadius: '6px' }}
+                      onClick={() => handleAdminDeleteStore(s.id)}
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
