@@ -3,12 +3,12 @@ import type { Case, User } from '../types';
 
 interface PauseMaterialModalProps {
   show: boolean;
-  selectedCase: Case | null;
+  selectedCase?: Case | null | undefined;
   currentUser: User | null;
   pauseReasonInput: string;
   setPauseReasonInput: (val: string) => void;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: (e?: any) => void;
 }
 
 export const PauseMaterialModal: React.FC<PauseMaterialModalProps> = ({
