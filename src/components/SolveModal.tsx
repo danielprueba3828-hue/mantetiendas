@@ -5,8 +5,8 @@ interface SolveModalProps {
   show: boolean;
   selectedCase?: Case | null | undefined;
   currentUser?: User | null;
-  solutionDesc: string;
-  setSolutionDesc: (val: string) => void;
+  solutionDesc?: string;
+  setSolutionDesc?: (val: string) => void;
   solveEvidenceFiles: string[];
   handleSolveEvidenceChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   setSolveEvidenceFiles: React.Dispatch<React.SetStateAction<string[]>>;
@@ -18,8 +18,8 @@ export const SolveModal: React.FC<SolveModalProps> = ({
   show,
   selectedCase,
   currentUser,
-  solutionDesc,
-  setSolutionDesc,
+  solutionDesc = '',
+  setSolutionDesc = () => {},
   solveEvidenceFiles,
   handleSolveEvidenceChange,
   setSolveEvidenceFiles,
