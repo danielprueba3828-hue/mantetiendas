@@ -1,9 +1,12 @@
 import React from 'react';
-import type { Case } from '../types';
+import type { Case, User } from '../types';
 
 interface SolveModalProps {
   show: boolean;
   selectedCase?: Case | null | undefined;
+  currentUser?: User | null;
+  solutionDesc: string;
+  setSolutionDesc: (val: string) => void;
   solveEvidenceFiles: string[];
   handleSolveEvidenceChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   setSolveEvidenceFiles: React.Dispatch<React.SetStateAction<string[]>>;
@@ -14,6 +17,9 @@ interface SolveModalProps {
 export const SolveModal: React.FC<SolveModalProps> = ({
   show,
   selectedCase,
+  currentUser,
+  solutionDesc,
+  setSolutionDesc,
   solveEvidenceFiles,
   handleSolveEvidenceChange,
   setSolveEvidenceFiles,
@@ -22,11 +28,15 @@ export const SolveModal: React.FC<SolveModalProps> = ({
 }) => {
   if (!show || !selectedCase) return null;
 
+  const isTech = currentUser?.rol === 'tecnico';
+
   return (
     <div className="modal-backdrop">
-      <div className="modal-sheet">
+      <div className="modal-sheet" style={{ maxWidth: '480px', width: '100%' }}>
         <div className="modal-header">
-          <h3 style={{ margin: 0 }}>Resolver Caso #{selectedCase.id}</h3>
+          <h3 style={{ margin: 0 }}>
+            {isTech ? 'Concluir Trabajo Técnico' : 'Concluir Trabajo en Tienda'} #{selectedCase.id}
+          </h3>
           <button 
             type="button" 
             onClick={onClose}
@@ -35,10 +45,28 @@ export const SolveModal: React.FC<SolveModalProps> = ({
             ✕
           </button>
         </div>
-        <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <form onSubmit={onConfirm} style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-            Para concluir este caso, es <strong>obligatorio</strong> adjuntar la foto del trabajo terminado como evidencia fotográfica de resolución.
+            {isTech ? (
+              <>Para concluir este caso, como técnico es <strong>obligatorio</strong> adjuntar la fotografía del trabajo terminado como evidencia de resolución.</>
+            ) : (
+              <>Marcar la conclusión del trabajo técnico realizado en la tienda.</>
+            )}
           </p>
+
+          <div>
+            <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, marginBottom: '4px', color: 'var(--text-main)' }}>
+              📝 Detalle del trabajo realizado (Opcional):
+            </label>
+            <textarea
+              className="input-box"
+              value={solutionDesc}
+              onChange={e => setSolutionDesc(e.target.value)}
+              placeholder="Ej: Se realizó el mantenimiento correctivo y se probó operatividad..."
+              rows={2}
+              style={{ width: '100%', fontSize: '0.85rem', resize: 'vertical' }}
+            />
+          </div>
 
           <div style={{ border: '2px dashed var(--border-color)', borderRadius: '8px', padding: '16px', textAlign: 'center' }}>
             <input 
@@ -50,7 +78,7 @@ export const SolveModal: React.FC<SolveModalProps> = ({
               style={{ display: 'none' }} 
             />
             <label htmlFor="solve-file-input" className="btn btn-secondary" style={{ cursor: 'pointer', display: 'inline-block' }}>
-              📷 Seleccionar Fotos ({solveEvidenceFiles.length}/10)
+              📷 {isTech ? 'Seleccionar Fotos de Evidencia' : 'Adjuntar Fotos (Opcional)'} ({solveEvidenceFiles.length}/10)
             </label>
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px', marginBottom: 0 }}>
               Formato JPG, PNG o WebP. Máximo 10 fotografías.
@@ -74,6 +102,12 @@ export const SolveModal: React.FC<SolveModalProps> = ({
             </div>
           )}
 
+          {isTech && solveEvidenceFiles.length === 0 && (
+            <div style={{ background: '#fffbeb', border: '1px solid #fef3c7', padding: '8px 12px', borderRadius: '6px', fontSize: '0.78rem', color: '#b45309', fontWeight: 600 }}>
+              ⚠️ Como técnico, adjunta al menos 1 fotografía de evidencia para habilitar la conclusión.
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
             <button 
               type="button" 
@@ -86,13 +120,13 @@ export const SolveModal: React.FC<SolveModalProps> = ({
               type="button" 
               className="btn btn-success"
               style={{ fontWeight: 700 }}
-              disabled={solveEvidenceFiles.length === 0}
-              onClick={onConfirm}
+              disabled={isTech && solveEvidenceFiles.length === 0}
+              onClick={(e) => onConfirm(e)}
             >
-              ✅ Concluir Caso
+              ✅ Concluir Trabajo
             </button>
           </div>
-        </div>
+        </form>
       </div>
     </div>
   );
