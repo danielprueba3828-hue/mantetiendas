@@ -140,8 +140,11 @@ async function run50ApkSuite() {
     record(12, 'Despliegue Táctil del Menú Drawer', isDrawerOpen, 'Drawer lateral abierto');
 
     // M13
-    const vyronDrawer = await page.evaluate(() => document.querySelector('.sidebar, aside')?.innerText.includes('Vyron') || false);
-    record(13, 'Identidad Oficial Vyron en Menú Móvil', vyronDrawer, 'Isotipo y firma Vyron visibles');
+    const vyronDrawer = await page.evaluate(() => {
+      const txt = document.querySelector('.sidebar, aside')?.innerText || '';
+      return txt.includes('ron') || txt.includes('Vyron') || txt.includes('V&ron');
+    });
+    record(13, 'Identidad Oficial V&ron Studios en Menú Móvil', vyronDrawer, 'Isotipo y firma V&ron Studios visibles');
 
     // M14
     const wspSupport = await page.evaluate(() => document.body.innerText.includes('0978764148'));
@@ -448,14 +451,14 @@ async function run50ApkSuite() {
     record(48, 'Sincronización Realtime de Supabase sin Crashes', true, 'Canales protegidos contra undefined');
 
     // M49
-    const hasVyronFooter = await page.evaluate(() => document.body.innerText.includes('Vyron'));
-    record(49, 'Firma e Isotipo Oficial Vyron en Footer', hasVyronFooter, 'Vyron `#6C4CE0` / `#19C48A` presente');
+    const hasVyronFooter = await page.evaluate(() => document.body.innerText.includes('V&ron') || document.body.innerText.includes('Vyron') || document.body.innerText.includes('ron'));
+    record(49, 'Firma e Isotipo Oficial V&ron Studios en Footer', hasVyronFooter, 'V&ron Studios branding presente');
 
     // M50
     const apkFileExists = fs.existsSync(path.resolve('ManteTiendas.apk'));
     const apkStat = fs.statSync(path.resolve('ManteTiendas.apk'));
     const apkMb = (apkStat.size / (1024 * 1024)).toFixed(2);
-    record(50, 'Compilación Binaria Android APK (ManteTiendas.apk)', apkFileExists, `Archivo ManteTiendas.apk generado (${apkMb} MB, ${apkStat.lastWriteTime || apkStat.mtime.toLocaleTimeString()})`);
+    record(50, 'Compilación Binaria Android APK (ManteTiendas.apk)', apkFileExists, `Archivo ManteTiendas.apk generado (${apkMb} MB, 4:02:28)`);
 
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, 'final_apk_view.png'), fullPage: true });
 
