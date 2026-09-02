@@ -101,6 +101,7 @@ export const TakeCaseModal: React.FC<TakeCaseModalProps> = ({
               type="button" 
               className="btn btn-primary"
               style={{ fontWeight: 700 }}
+              disabled={takeCaseMode === 'equipo' && !takeCaseSupportTech.trim()}
               onClick={onConfirm}
             >
               ⚡ Confirmar y Comenzar
