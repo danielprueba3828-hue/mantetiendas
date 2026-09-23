@@ -21,7 +21,13 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
   const [activeMonth, setActiveMonth] = React.useState<string>('todos');
   const [search, setSearch] = React.useState<string>('');
 
-  const months = ['todos', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
+  const months = React.useMemo(() => {
+    const set = new Set<string>();
+    shiftSchedule.forEach(s => {
+      if (s.mes) set.add(s.mes.trim().toUpperCase());
+    });
+    return ['todos', ...Array.from(set)];
+  }, [shiftSchedule]);
 
   const filteredSchedule = shiftSchedule.filter(s => {
     if (activeMonth !== 'todos' && s.mes.toUpperCase() !== activeMonth.toUpperCase()) return false;

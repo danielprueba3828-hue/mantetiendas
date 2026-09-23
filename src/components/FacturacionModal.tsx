@@ -60,6 +60,12 @@ export const FacturacionModal: React.FC<FacturacionModalProps> = ({
 }) => {
   const [selectedCaseId, setSelectedCaseId] = React.useState<number | null>(facturacionCasoId);
 
+  React.useEffect(() => {
+    if (facturacionCasoId !== null && facturacionCasoId !== undefined) {
+      setSelectedCaseId(facturacionCasoId);
+    }
+  }, [facturacionCasoId]);
+
   if (!show) return null;
 
   const currentCase = cases.find(c => c.id === (selectedCaseId || facturacionCasoId));

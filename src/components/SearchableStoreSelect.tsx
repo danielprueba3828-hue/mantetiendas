@@ -62,8 +62,13 @@ export const SearchableStoreSelect: React.FC<{
   }, [isOpen]);
 
   return (
-    <div ref={wrapperRef} style={{ position: 'relative', minWidth: '180px', flex: 1, maxWidth: '320px' }}>
+    <div 
+      ref={wrapperRef} 
+      className="searchable-store-select-wrapper" 
+      style={{ position: 'relative', minWidth: '180px', flex: 1, width: '100%' }}
+    >
       <div 
+        className="searchable-store-trigger"
         onClick={() => setIsOpen(!isOpen)}
         style={{
           display: 'flex',

@@ -131,8 +131,15 @@ export interface Case {
   solicitud_material_anticipada?: boolean;
   material_anticipado_nombre?: string;
   material_anticipado_cantidad?: number;
+  material_anticipado_items?: CasePreMaterialItem[];
   material_anticipado_estado?: 'pendiente_aprobacion' | 'aprobado' | 'rechazado';
   material_anticipado_aprobado_por?: string;
+}
+
+export interface CasePreMaterialItem {
+  id: number | string;
+  nombre: string;
+  cantidad: number;
 }
 
 export interface AppNotification {
@@ -156,6 +163,12 @@ export interface MaterialRequest {
   descripcion: string;
   estado: 'pendiente' | 'aprobado' | 'denegado';
   createdAt: string;
+  solicitadoPorId?: number;
+  solicitadoPorNombre?: string;
+  solicitadoPorRol?: string;
+  cantidad?: number;
+  materialNombre?: string;
+  tiendaId?: number;
 }
 
 export interface TechAvailability {
@@ -165,3 +178,14 @@ export interface TechAvailability {
   diasLibres?: string;
   estatus: 'disponible' | 'libre' | 'en_ruta' | 'trabajando';
 }
+
+export interface ActiveTechPunchClock {
+  tecnicoId: number;
+  tecnicoNombre: string;
+  tiendaId: number;
+  casoId: number;
+  horaIngreso: string; // ISO string
+  numeroVisita: number;
+  esNuevoCaso?: boolean;
+}
+

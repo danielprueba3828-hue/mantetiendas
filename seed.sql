@@ -98,7 +98,7 @@ INSERT INTO usuarios (id, nombre, correo, usuario, contrasena, rol, tienda_id, s
 (4, 'Marfa Torres (Supervisor)', 'marfa.torres@marathonsports.com', 'SUP_MT', 'SUP*MT*', 'supervisor', NULL, ARRAY[41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58], TRUE),
 (5, 'Luis Vallejos (Supervisor)', 'luis.vallejos@marathonsports.com', 'SUP_LV', 'SUP*LV*', 'supervisor', NULL, ARRAY[59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79], TRUE),
 (6, 'Efrén U (Técnico)', 'tec_eu@marathonsports.com', 'TEC_EU', 'TEC*EU*', 'tecnico', NULL, NULL, TRUE),
-(7, 'Fernando S (Técnico)', 'tec_fs@marathonsports.com', 'TEC_FS', 'TEC*FS*', 'tecnico', NULL, NULL, TRUE),
+(7, 'Francisco S (Técnico)', 'tec_fs@marathonsports.com', 'TEC_FS', 'TEC*FS*', 'tecnico', NULL, NULL, TRUE),
 (8, 'Jefe BODEGA ATAHUALPA (BAT1)', 'bat1@marathonsports.com', 'BAT1_2026', 'BAT1*2026*', 'jefe_tienda', 1, NULL, TRUE),
 (9, 'Jefe BODEGA NORTE (BNO1)', 'bno1@marathonsports.com', 'BNO1_2026', 'BNO1*2026*', 'jefe_tienda', 2, NULL, TRUE),
 (10, 'Jefe BODEGA RIOBAMBA (BRI1)', 'bri1@marathonsports.com', 'BRI1_2026', 'BRI1*2026*', 'jefe_tienda', 3, NULL, TRUE),

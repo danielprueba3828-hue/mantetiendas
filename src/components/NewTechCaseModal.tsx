@@ -1,6 +1,7 @@
 import React from 'react';
 import type { Store, User } from '../types';
 import { SearchableStoreSelect } from './SearchableStoreSelect';
+import { EditableCategorySelect } from './EditableCategorySelect';
 
 interface NewTechCaseModalProps {
   show: boolean;
@@ -62,18 +63,13 @@ export const NewTechCaseModal: React.FC<NewTechCaseModalProps> = ({
 
           <div>
             <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>Categoría *</label>
-            <select
+            <EditableCategorySelect
               value={techCaseCategory}
-              onChange={e => setTechCaseCategory(e.target.value)}
+              onChange={setTechCaseCategory}
+              categories={categories}
+              placeholder="Escribe o selecciona categoría..."
               required
-              className="custom-select"
-              style={{ width: '100%' }}
-            >
-              <option value="">-- Seleccionar Categoría --</option>
-              {categories.map(cat => (
-                <option key={cat.id} value={cat.nombre}>{cat.nombre}</option>
-              ))}
-            </select>
+            />
           </div>
 
           <div>

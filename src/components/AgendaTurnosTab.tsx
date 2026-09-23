@@ -18,8 +18,16 @@ export const AgendaTurnosTab: React.FC<AgendaTurnosTabProps> = ({
   setScheduleSearchQuery,
   loadSheetJS
 }) => {
+  const availableMonths = React.useMemo(() => {
+    const set = new Set<string>();
+    shiftSchedule.forEach(s => {
+      if (s.mes) set.add(s.mes.trim());
+    });
+    return Array.from(set);
+  }, [shiftSchedule]);
+
   const filteredSchedule = shiftSchedule.filter(s => {
-    if (scheduleMonthFilter !== 'todos' && s.mes !== scheduleMonthFilter) return false;
+    if (scheduleMonthFilter !== 'todos' && s.mes.toUpperCase() !== scheduleMonthFilter.toUpperCase()) return false;
     if (scheduleSearchQuery.trim()) {
       const q = scheduleSearchQuery.toLowerCase();
       return (
@@ -70,9 +78,9 @@ export const AgendaTurnosTab: React.FC<AgendaTurnosTabProps> = ({
             style={{ fontSize: '0.8rem', padding: '6px 10px' }}
           >
             <option value="todos">🗓️ Todos los Meses</option>
-            <option value="Enero 2026">Enero 2026</option>
-            <option value="Febrero 2026">Febrero 2026</option>
-            <option value="Marzo 2026">Marzo 2026</option>
+            {availableMonths.map(m => (
+              <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1).toLowerCase()}</option>
+            ))}
           </select>
 
           <input

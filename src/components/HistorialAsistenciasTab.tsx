@@ -38,7 +38,7 @@ export const HistorialAsistenciasTab: React.FC<HistorialAsistenciasTabProps> = (
   });
 
   const filteredCases = closedCases.filter(c => {
-    if (storeFilter !== 'todas' && c.tiendaId !== storeFilter) return false;
+    if (storeFilter !== 'todas' && String(c.tiendaId) !== String(storeFilter)) return false;
     if (techFilter !== 'todos') {
       const tech = users.find(u => u.id === techFilter);
       const isAssigned = c.tecnicoAsignadoId === techFilter;

@@ -2,10 +2,11 @@ import { App as CapApp } from '@capacitor/app';
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { checkBiometricsAvailability, saveBiometricCredentials, authenticateWithBiometrics } from './biometrics';
 
 import type { 
   ShiftEntry, MaterialCatalogItem, Store, User, Evidence, Case, 
-  AppNotification, MaterialRequest, TechAvailability, JornadaAsistencia 
+  AppNotification, MaterialRequest, TechAvailability, JornadaAsistencia, ActiveTechPunchClock 
 } from './types';
 
 import { 
@@ -37,8 +38,17 @@ import { SolveModal } from './components/SolveModal';
 import { NewTechCaseModal } from './components/NewTechCaseModal';
 import { FacturacionModal } from './components/FacturacionModal';
 import { ScheduleModal } from './components/ScheduleModal';
+import { EditCaseModal } from './components/EditCaseModal';
+import { DeleteCaseModal } from './components/DeleteCaseModal';
+import { TechTimbradorModal } from './components/TechTimbradorModal';
+import { TechTimbradorBanner } from './components/TechTimbradorBanner';
+
 
 export default function App() {
+  const effectiveSupabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://kqoftkwezwtfrthqjmdq.supabase.co';
+  const isSupabaseConfigured = 
+    !!effectiveSupabaseUrl && 
+    effectiveSupabaseUrl !== 'https://tu-proyecto.supabase.co';
 
   // ==========================================
   // STATE MANAGEMENT
@@ -73,9 +83,19 @@ export default function App() {
   }, []);
 
   
+  // Manejo de sesión: al cerrar el APK o el navegador, la sesión activa se cierra
+  // para solicitar autenticación biométrica (Huella, Face ID, Windows Hello) o credenciales al volver a entrar.
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('maint_user');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const isSessionActive = sessionStorage.getItem('maint_session_active');
+      if (isSessionActive === 'true') {
+        const saved = localStorage.getItem('maint_user');
+        return saved ? JSON.parse(saved) : null;
+      }
+      return null;
+    } catch {
+      return null;
+    }
   });
 
   // Guardar datos del usuario para el servicio nativo de Android
@@ -87,9 +107,67 @@ export default function App() {
           rol: currentUser.rol,
           tiendaId: currentUser.tiendaId || ''
         }));
-      } catch (e) {}
+      } catch {}
     }
   }, [currentUser]);
+
+  // Manejo de ciclo de vida en Android APK / iOS: al minimizar, bloquear pantalla o cerrar el app,
+  // la sesión activa se suspende para exigir desbloqueo biométrico al retornar
+  useEffect(() => {
+    let removeListener: (() => void) | undefined;
+    try {
+      CapApp.addListener('appStateChange', ({ isActive }) => {
+        if (!isActive) {
+          sessionStorage.removeItem('maint_session_active');
+        } else {
+          const isSessionActive = sessionStorage.getItem('maint_session_active');
+          if (isSessionActive !== 'true') {
+            setCurrentUser(null);
+            setShowManualLoginForm(false);
+          }
+        }
+      }).then(handle => {
+        removeListener = () => handle.remove();
+      });
+    } catch (e) {
+      console.log("CapApp appStateChange listener:", e);
+    }
+
+    return () => {
+      if (removeListener) removeListener();
+    };
+  }, []);
+
+  // Estados y verificación de autenticación biométrica (Huella / Face ID / Windows Hello)
+  const [isBiometricAvailable, setIsBiometricAvailable] = useState(false);
+  const [biometricType, setBiometricType] = useState<string>('Huella / Face ID');
+  const [savedBiometricUser, setSavedBiometricUser] = useState<User | null>(() => {
+    try {
+      const saved = localStorage.getItem('maint_biometric_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isBiometricAuthenticating, setIsBiometricAuthenticating] = useState(false);
+  const [showManualLoginForm, setShowManualLoginForm] = useState(false);
+
+  useEffect(() => {
+    const checkBioAvailability = async () => {
+      try {
+        const res = await checkBiometricsAvailability();
+        if (res.isAvailable) {
+          setIsBiometricAvailable(true);
+          setBiometricType(res.biometryType);
+        } else {
+          setIsBiometricAvailable(false);
+        }
+      } catch (err) {
+        console.log("Error verificando biometría:", err);
+      }
+    };
+    checkBioAvailability();
+  }, []);
 
   const [stores, setStores] = useState<Store[]>(() => {
     const saved = localStorage.getItem('maint_stores');
@@ -106,10 +184,13 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.removeItem('maint_cases');
-      localStorage.removeItem('maint_users');
       localStorage.removeItem('maint_notifs');
-    } catch (e) {}
+    } catch {}
   }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem('maint_users', JSON.stringify(users)); } catch {}
+  }, [users]);
 
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
@@ -119,7 +200,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    try { localStorage.setItem('maint_read_notif_ids', JSON.stringify(readNotifIds)); } catch (e) {}
+    try { localStorage.setItem('maint_read_notif_ids', JSON.stringify(readNotifIds)); } catch {}
   }, [readNotifIds]);
 
   const [materialRequests, setMaterialRequests] = useState<MaterialRequest[]>([]);
@@ -141,20 +222,75 @@ export default function App() {
   const [techStatus, setTechStatus] = useState<'Trabajando en tienda' | 'En stand by'>('Trabajando en tienda');
   const [solveEvidenceFiles, setSolveEvidenceFiles] = useState<string[]>([]);
 
-  const handleSolveEvidenceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const compressImage = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 1280;
+          const MAX_HEIGHT = 1280;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height = Math.round((height * MAX_WIDTH) / width);
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width = Math.round((width * MAX_HEIGHT) / height);
+              height = MAX_HEIGHT;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', 0.75));
+          } else {
+            resolve((e.target?.result as string) || '');
+          }
+        };
+        img.onerror = () => {
+          resolve((e.target?.result as string) || '');
+        };
+        img.src = (e.target?.result as string) || '';
+      };
+      reader.onerror = () => {
+        resolve('');
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleSolveEvidenceChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const filesArray = Array.from(e.target.files);
       if (solveEvidenceFiles.length + filesArray.length > 10) {
         alert("Puedes subir un máximo de 10 fotos.");
         return;
       }
-      filesArray.forEach(file => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          setSolveEvidenceFiles(prev => [...prev, reader.result as string]);
-        };
-        reader.readAsDataURL(file);
-      });
+      for (const file of filesArray) {
+        try {
+          const compressed = await compressImage(file);
+          if (compressed) {
+            setSolveEvidenceFiles(prev => [...prev, compressed]);
+          }
+        } catch {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            if (reader.result) {
+              setSolveEvidenceFiles(prev => [...prev, reader.result as string]);
+            }
+          };
+          reader.readAsDataURL(file);
+        }
+      }
     }
   };
 
@@ -189,6 +325,7 @@ export default function App() {
   const [scheduleMonthFilter, setScheduleMonthFilter] = useState<string>('todos');
   const [scheduleSearchQuery, setScheduleSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'todos' | 'pendiente' | 'en_proceso' | 'completado' | 'pausado_material'>('todos');
+  const [casesViewMode, setCasesViewMode] = useState<'pendientes' | 'concluidos'>('pendientes');
   const [storeFilter, setStoreFilter] = useState<string>('todos');
   const [searchTerm, setSearchTerm] = useState('');
   
@@ -198,6 +335,11 @@ export default function App() {
 
   // Modals
   const [showNewCaseModal, setShowNewCaseModal] = useState(false);
+  const [editingCase, setEditingCase] = useState<Case | null>(null);
+  const [showEditCaseModal, setShowEditCaseModal] = useState(false);
+  const [deletingCase, setDeletingCase] = useState<Case | null>(null);
+  const [showDeleteCaseModal, setShowDeleteCaseModal] = useState(false);
+  const [newCaseStoreId, setNewCaseStoreId] = useState<number>(1);
   const [showSolveModal, setShowSolveModal] = useState(false);
   const [showNewTechCaseModal, setShowNewTechCaseModal] = useState(false);
   const [showTakeCaseModal, setShowTakeCaseModal] = useState(false);
@@ -216,6 +358,53 @@ export default function App() {
   const [newRequestPreMaterial, setNewRequestPreMaterial] = useState<boolean>(false);
   const [newPreMaterialName, setNewPreMaterialName] = useState<string>('');
   const [newPreMaterialQty, setNewPreMaterialQty] = useState<number>(1);
+  const [newPreMaterialItems, setNewPreMaterialItems] = useState<{ id: number; nombre: string; cantidad: number }[]>([
+    { id: 1, nombre: '', cantidad: 1 }
+  ]);
+
+  // Estados del Timbrador de Asistencia para Técnicos
+  const [showTechTimbradorModal, setShowTechTimbradorModal] = useState(false);
+  const [activePunchClock, setActivePunchClock] = useState<ActiveTechPunchClock | null>(() => {
+    try {
+      const savedUser = localStorage.getItem('maint_user');
+      if (savedUser) {
+        const u = JSON.parse(savedUser);
+        if (u.rol === 'tecnico') {
+          const savedPunch = localStorage.getItem(`maint_tech_punch_${u.id}`);
+          return savedPunch ? JSON.parse(savedPunch) : null;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  });
+
+
+  const handleAddPreMaterialItem = () => {
+    setNewPreMaterialItems(prev => [
+      ...prev,
+      { id: Date.now() + Math.floor(Math.random() * 1000), nombre: '', cantidad: 1 }
+    ]);
+  };
+
+  const handleRemovePreMaterialItem = (id: number | string) => {
+    setNewPreMaterialItems(prev => {
+      if (prev.length <= 1) {
+        return [{ id: Date.now(), nombre: '', cantidad: 1 }];
+      }
+      return prev.filter(item => item.id !== id);
+    });
+  };
+
+  const handleUpdatePreMaterialItem = (id: number | string, field: 'nombre' | 'cantidad', val: string | number) => {
+    setNewPreMaterialItems(prev => prev.map(item => {
+      if (item.id === id) {
+        return { ...item, [field]: val };
+      }
+      return item;
+    }));
+  };
 
   const handleOpenScheduleModal = (c: Case) => {
     setScheduleCaseId(c.id);
@@ -252,7 +441,7 @@ export default function App() {
     try {
       const saved = localStorage.getItem('maint_billing_profiles');
       if (saved) return { ...DEFAULT_BILLING_PROFILES, ...JSON.parse(saved) };
-    } catch (e) {}
+    } catch {}
     return DEFAULT_BILLING_PROFILES;
   });
 
@@ -263,10 +452,10 @@ export default function App() {
   // Form states
   const [rememberMe, setRememberMe] = useState(true);
   const [loginUser, setLoginUser] = useState(() => {
-    try { return localStorage.getItem('maint_saved_user') || ''; } catch (e) { return ''; }
+    try { return localStorage.getItem('maint_saved_user') || ''; } catch { return ''; }
   });
   const [loginPass, setLoginPass] = useState(() => {
-    try { return localStorage.getItem('maint_saved_pass') || ''; } catch (e) { return ''; }
+    try { return localStorage.getItem('maint_saved_pass') || ''; } catch { return ''; }
   });
   const [loginError, setLoginError] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
@@ -305,7 +494,7 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem('maint_read_notif_ids', JSON.stringify(readNotifIds));
-    } catch (e) {}
+    } catch {}
   }, [readNotifIds]);
 
   useEffect(() => {
@@ -313,7 +502,7 @@ export default function App() {
       if (currentUser && typeof window !== 'undefined' && 'Notification' in window && typeof Notification.requestPermission === 'function' && Notification.permission === 'default') {
         Notification.requestPermission().catch(() => {});
       }
-    } catch (e) {}
+    } catch {}
   }, [currentUser]);
 
 
@@ -382,6 +571,7 @@ export default function App() {
                 solicitud_material_anticipada: dbC.solicitud_material_anticipada || false,
                 material_anticipado_nombre: dbC.material_anticipado_nombre || undefined,
                 material_anticipado_cantidad: dbC.material_anticipado_cantidad || 1,
+                material_anticipado_items: dbC.material_anticipado_items || undefined,
                 material_anticipado_estado: dbC.material_anticipado_estado || undefined,
                 evidencias: existingMap.get(dbC.id)?.evidencias || [],
                 comentarios: existingMap.get(dbC.id)?.comentarios || [],
@@ -432,6 +622,52 @@ export default function App() {
           }
           lastMaxNotifId = topNotifId;
         }
+
+        // 3. Sincronización periódica de usuarios (para reflejar nuevos usuarios en todos los administradores y técnicos)
+        const { data: latestUsers } = await supabase
+          .from('usuarios')
+          .select('*');
+        if (latestUsers && latestUsers.length > 0) {
+          setUsers(prev => {
+            const isDifferent = prev.length !== latestUsers.length || latestUsers.some(dbU => {
+              const p = prev.find(x => x.id === dbU.id);
+              return !p || p.estado !== dbU.estado || p.rol !== dbU.rol || p.nombre !== dbU.nombre || p.usuario !== dbU.usuario;
+            });
+            if (!isDifferent) return prev;
+            return latestUsers.map((u: any) => ({
+              id: u.id,
+              nombre: u.nombre,
+              correo: u.correo,
+              usuario: u.usuario,
+              contrasena: u.contrasena || undefined,
+              rol: u.rol,
+              tiendaId: u.tienda_id || undefined,
+              supervisorTiendas: u.supervisor_tiendas || undefined,
+              estado: u.estado,
+              passwordCambiado: u.password_cambiado ?? false
+            }));
+          });
+        }
+
+        // 4. Sincronización periódica de tiendas
+        const { data: latestStores } = await supabase
+          .from('tiendas')
+          .select('*');
+        if (latestStores && latestStores.length > 0) {
+          setStores(prev => {
+            const isDifferent = prev.length !== latestStores.length || latestStores.some(dbS => {
+              const p = prev.find(x => x.id === dbS.id);
+              return !p || p.nombre !== dbS.nombre || p.ciudad !== dbS.ciudad;
+            });
+            if (!isDifferent) return prev;
+            return latestStores.map((s: any) => ({
+              id: s.id,
+              nombre: s.nombre,
+              ciudad: s.ciudad,
+              direccion: s.direccion
+            }));
+          });
+        }
       } catch (err) {
         console.log("Error en sincronizacion rapida:", err);
       }
@@ -440,7 +676,7 @@ export default function App() {
     pollSync();
     const intervalId = setInterval(pollSync, 2500);
     return () => clearInterval(intervalId);
-  }, [currentUser]);
+  }, [currentUser, isSupabaseConfigured]);
 
   // Apply Theme class to document body
   useEffect(() => {
@@ -458,10 +694,6 @@ export default function App() {
     setIsDarkMode(nextVal);
     localStorage.setItem('theme', nextVal ? 'dark' : 'light');
   };
-
-  const isSupabaseConfigured = 
-    !!import.meta.env.VITE_SUPABASE_URL && 
-    import.meta.env.VITE_SUPABASE_URL !== 'https://tu-proyecto.supabase.co';
 
   // Manejo del botón "Atrás" de Android y reconexión en segundo plano
   useEffect(() => {
@@ -481,18 +713,34 @@ export default function App() {
         LocalNotifications.requestPermissions().catch(() => {});
 
         backListener = CapApp.addListener('backButton', () => {
-          if (showNewCaseModal) {
+          if (showEditCaseModal) {
+            setShowEditCaseModal(false);
+          } else if (showDeleteCaseModal) {
+            setShowDeleteCaseModal(false);
+          } else if (showNewCaseModal) {
             setShowNewCaseModal(false);
+          } else if (showTechTimbradorModal) {
+            setShowTechTimbradorModal(false);
           } else if (showNewTechCaseModal) {
             setShowNewTechCaseModal(false);
           } else if (showSolveModal) {
             setShowSolveModal(false);
+          } else if (showTakeCaseModal) {
+            setShowTakeCaseModal(false);
+          } else if (showPauseMaterialModal) {
+            setShowPauseMaterialModal(false);
           } else if (showScheduleModal) {
             setShowScheduleModal(false);
+          } else if (showFacturacionModal) {
+            setShowFacturacionModal(false);
+          } else if (showChangePasswordModal) {
+            setShowChangePasswordModal(false);
           } else if (showNotifModal) {
             setShowNotifModal(false);
           } else if (selectedCaseId) {
             setSelectedCaseId(null);
+          } else if (activeTab !== 'dashboard') {
+            setActiveTab('dashboard');
           } else {
             CapApp.minimizeApp();
           }
@@ -506,22 +754,27 @@ export default function App() {
           }
         });
       }
-    } catch (e) {}
+    } catch {}
 
     return () => {
       if (backListener && typeof backListener.then === 'function') {
         backListener.then((handle: any) => handle?.remove?.()).catch(() => {});
       } else if (backListener && typeof backListener.remove === 'function') {
-        try { backListener.remove(); } catch (e) {}
+        try { backListener.remove(); } catch {}
       }
 
       if (appStateListener && typeof appStateListener.then === 'function') {
         appStateListener.then((handle: any) => handle?.remove?.()).catch(() => {});
       } else if (appStateListener && typeof appStateListener.remove === 'function') {
-        try { appStateListener.remove(); } catch (e) {}
+        try { appStateListener.remove(); } catch {}
       }
     };
-  }, [showNewCaseModal, showNewTechCaseModal, showSolveModal, showScheduleModal, showNotifModal, selectedCaseId, isSupabaseConfigured]);
+  }, [
+    showEditCaseModal, showDeleteCaseModal,
+    showNewCaseModal, showNewTechCaseModal, showSolveModal, showTakeCaseModal,
+    showPauseMaterialModal, showScheduleModal, showFacturacionModal,
+    showChangePasswordModal, showNotifModal, selectedCaseId, activeTab, isSupabaseConfigured
+  ]);
 
   // ==========================================
   // REALTIME NOTIFICATION SYSTEM
@@ -604,6 +857,7 @@ export default function App() {
                 solicitud_material_anticipada: nuevoCaso.solicitud_material_anticipada || false,
                 material_anticipado_nombre: nuevoCaso.material_anticipado_nombre || undefined,
                 material_anticipado_cantidad: nuevoCaso.material_anticipado_cantidad || 1,
+                material_anticipado_items: nuevoCaso.material_anticipado_items || undefined,
                 material_anticipado_estado: nuevoCaso.material_anticipado_estado || undefined,
                 evidencias: [],
                 comentarios: [],
@@ -621,13 +875,18 @@ export default function App() {
                   estado: modCaso.estado,
                   tecnicoAsignadoId: modCaso.tecnico_asignado_id || undefined,
                   fechaCierre: modCaso.fecha_cierre || undefined,
-                  // Nuevos campos
+                  // Campos presenciales y multi-visita
                   tecnico_presencial_nombre: modCaso.tecnico_presencial_nombre || undefined,
                   hora_entrada: modCaso.hora_entrada || undefined,
                   hora_salida: modCaso.hora_salida || undefined,
                   es_caso_tecnico: modCaso.es_caso_tecnico || false,
                   tecnico_estatus_trabajo: modCaso.tecnico_estatus_trabajo || undefined,
                   reaperturas_count: modCaso.reaperturas_count || 0,
+                  pausado_por_material: Boolean(modCaso.pausado_por_material),
+                  motivo_pausa_material: modCaso.motivo_pausa_material || undefined,
+                  fecha_pausa_material: modCaso.fecha_pausa_material || undefined,
+                  materiales_llegaron_tienda: Boolean(modCaso.materiales_llegaron_tienda),
+                  fecha_llegada_materiales: modCaso.fecha_llegada_materiales || undefined,
                   fecha_programada: modCaso.fecha_programada || undefined,
                   turno_programado: modCaso.turno_programado || undefined,
                   horas_estimadas: modCaso.horas_estimadas || undefined,
@@ -635,6 +894,7 @@ export default function App() {
                   solicitud_material_anticipada: modCaso.solicitud_material_anticipada || false,
                   material_anticipado_nombre: modCaso.material_anticipado_nombre || undefined,
                   material_anticipado_cantidad: modCaso.material_anticipado_cantidad || 1,
+                  material_anticipado_items: modCaso.material_anticipado_items || undefined,
                   material_anticipado_estado: modCaso.material_anticipado_estado || undefined
                 };
               }
@@ -663,14 +923,15 @@ export default function App() {
                 texto: newC.texto,
                 fecha: newC.fecha
               };
-              const alreadyExists = c.comentarios.some(co => 
+              const currentComms = c.comentarios || [];
+              const alreadyExists = currentComms.some(co => 
                 co.id === commentObj.id || 
                 (co.texto === commentObj.texto && co.autor === commentObj.autor)
               );
               if (alreadyExists) return c;
               return {
                 ...c,
-                comentarios: [...c.comentarios, commentObj]
+                comentarios: [...currentComms, commentObj]
               };
             }
             return c;
@@ -698,16 +959,17 @@ export default function App() {
                 nombreArchivo: newE.nombre_archivo,
                 fecha: newE.fecha
               };
-              if (c.evidencias.some(ev => ev.id === evObj.id)) return c;
-              if (c.evidencias.some(ev => ev.archivoUrl === evObj.archivoUrl)) {
+              const currentEvs = c.evidencias || [];
+              if (currentEvs.some(ev => ev.id === evObj.id)) return c;
+              if (currentEvs.some(ev => ev.archivoUrl === evObj.archivoUrl)) {
                 return {
                   ...c,
-                  evidencias: c.evidencias.map(ev => ev.archivoUrl === evObj.archivoUrl ? evObj : ev)
+                  evidencias: currentEvs.map(ev => ev.archivoUrl === evObj.archivoUrl ? evObj : ev)
                 };
               }
               return {
                 ...c,
-                evidencias: [...c.evidencias, evObj]
+                evidencias: [...currentEvs, evObj]
               };
             }
             return c;
@@ -846,10 +1108,16 @@ export default function App() {
             const newReq: MaterialRequest = {
               id: req.id,
               casoId: req.caso_id,
-              tecnicoId: req.tecnico_id,
+              tecnicoId: req.tecnico_id || req.solicitado_por_id || 0,
               descripcion: req.descripcion,
               estado: req.estado,
-              createdAt: req.created_at
+              createdAt: req.created_at,
+              solicitadoPorId: req.solicitado_por_id || req.tecnico_id,
+              solicitadoPorNombre: req.solicitado_por_nombre,
+              solicitadoPorRol: req.solicitado_por_rol,
+              cantidad: req.cantidad || 1,
+              materialNombre: req.material_nombre,
+              tiendaId: req.tienda_id
             };
             setMaterialRequests(prev => {
               if (prev.some(r => r.id === newReq.id)) return prev;
@@ -898,6 +1166,98 @@ export default function App() {
       )
       .subscribe();
 
+    // 7. Escuchar la tabla 'usuarios' en tiempo real
+    const channelUsuarios = supabase
+      .channel('realtime-usuarios')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'usuarios' },
+        (payload: any) => {
+          console.log("Cambio en usuarios en tiempo real:", payload);
+          if (payload.eventType === 'INSERT') {
+            const u = payload.new;
+            const newU: User = {
+              id: u.id,
+              nombre: u.nombre,
+              correo: u.correo,
+              usuario: u.usuario,
+              contrasena: u.contrasena || undefined,
+              rol: u.rol,
+              tiendaId: u.tienda_id || undefined,
+              supervisorTiendas: u.supervisor_tiendas || undefined,
+              estado: u.estado,
+              passwordCambiado: u.password_cambiado ?? false
+            };
+            setUsers(prev => {
+              if (prev.some(x => x.id === newU.id || x.usuario.toLowerCase() === newU.usuario.toLowerCase())) {
+                return prev.map(x => (x.id === newU.id || x.usuario.toLowerCase() === newU.usuario.toLowerCase()) ? newU : x);
+              }
+              return [...prev, newU];
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const u = payload.new;
+            const updatedU: User = {
+              id: u.id,
+              nombre: u.nombre,
+              correo: u.correo,
+              usuario: u.usuario,
+              contrasena: u.contrasena || undefined,
+              rol: u.rol,
+              tiendaId: u.tienda_id || undefined,
+              supervisorTiendas: u.supervisor_tiendas || undefined,
+              estado: u.estado,
+              passwordCambiado: u.password_cambiado ?? false
+            };
+            setUsers(prev => prev.map(x => x.id === u.id ? updatedU : x));
+            setCurrentUser(curr => (curr && curr.id === u.id) ? { ...curr, ...updatedU } : curr);
+          } else if (payload.eventType === 'DELETE') {
+            const oldId = payload.old?.id;
+            if (oldId) {
+              setUsers(prev => prev.filter(x => x.id !== oldId));
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    // 8. Escuchar la tabla 'tiendas' en tiempo real
+    const channelTiendas = supabase
+      .channel('realtime-tiendas')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tiendas' },
+        (payload: any) => {
+          console.log("Cambio en tiendas en tiempo real:", payload);
+          if (payload.eventType === 'INSERT') {
+            const s = payload.new;
+            const newS: Store = {
+              id: s.id,
+              nombre: s.nombre,
+              ciudad: s.ciudad,
+              direccion: s.direccion
+            };
+            setStores(prev => {
+              if (prev.some(x => x.id === newS.id)) return prev;
+              return [...prev, newS];
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const s = payload.new;
+            setStores(prev => prev.map(x => x.id === s.id ? {
+              ...x,
+              nombre: s.nombre,
+              ciudad: s.ciudad,
+              direccion: s.direccion
+            } : x));
+          } else if (payload.eventType === 'DELETE') {
+            const oldId = payload.old?.id;
+            if (oldId) {
+              setStores(prev => prev.filter(x => x.id !== oldId));
+            }
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
       supabase.removeChannel(channelCasos);
       supabase.removeChannel(channelComentarios);
@@ -905,11 +1265,13 @@ export default function App() {
       supabase.removeChannel(channelNotificaciones);
       supabase.removeChannel(channelMateriales);
       supabase.removeChannel(channelDisponibilidad);
+      supabase.removeChannel(channelUsuarios);
+      supabase.removeChannel(channelTiendas);
     };
   }, [isSupabaseConfigured, currentUser, stores]);
 
   useEffect(() => {
-    try { localStorage.setItem('maint_stores', JSON.stringify(stores)); } catch (e) {}
+    try { localStorage.setItem('maint_stores', JSON.stringify(stores)); } catch {}
   }, [stores]);
 
   useEffect(() => {
@@ -1031,10 +1393,16 @@ export default function App() {
           setMaterialRequests(dbMats.map((m: any) => ({
             id: m.id,
             casoId: m.caso_id,
-            tecnicoId: m.tecnico_id,
+            tecnicoId: m.tecnico_id || m.solicitado_por_id || 0,
             descripcion: m.descripcion,
             estado: m.estado,
-            createdAt: m.created_at
+            createdAt: m.created_at,
+            solicitadoPorId: m.solicitado_por_id || m.tecnico_id,
+            solicitadoPorNombre: m.solicitado_por_nombre,
+            solicitadoPorRol: m.solicitado_por_rol,
+            cantidad: m.cantidad || 1,
+            materialNombre: m.material_nombre,
+            tiendaId: m.tienda_id
           })));
         }
 
@@ -1064,10 +1432,12 @@ export default function App() {
   , [isSupabaseConfigured]);
 
   const handleLogout = () => {
+    sessionStorage.removeItem('maint_session_active');
     localStorage.removeItem('maint_user');
     setCurrentUser(null);
     setSelectedCaseId(null);
     setActiveTab('dashboard');
+    setShowManualLoginForm(true);
   };
 
   const handleLoginSubmit = (e: React.FormEvent) => {
@@ -1123,10 +1493,11 @@ export default function App() {
       return;
     }
 
+    sessionStorage.setItem('maint_session_active', 'true');
     localStorage.setItem('maint_user', JSON.stringify(matched));
     setCurrentUser(matched);
 
-    // Auto-guardado de credenciales en este dispositivo
+    // Auto-guardado de credenciales y configuración biométrica universal (Android, iPhone y PC)
     try {
       if (rememberMe) {
         localStorage.setItem('maint_saved_user', matched.usuario);
@@ -1135,7 +1506,10 @@ export default function App() {
         localStorage.removeItem('maint_saved_user');
         localStorage.removeItem('maint_saved_pass');
       }
-    } catch (e) {}
+      saveBiometricCredentials(matched, loginPass.trim());
+      setSavedBiometricUser(matched);
+      setShowManualLoginForm(false);
+    } catch {}
 
     // SOLAMENTE para Supervisores y Gerentes (administrador): solicitar cambio de contraseña en primer ingreso si no la han personalizado aún
     const isSupervisorOrGerente = matched.rol === 'supervisor' || matched.rol === 'administrador';
@@ -1145,6 +1519,38 @@ export default function App() {
     } else {
       setIsFirstLoginChange(false);
       setShowChangePasswordModal(false);
+    }
+  };
+
+  const handleBiometricLogin = async () => {
+    if (!savedBiometricUser) {
+      setLoginError('Ingresa primero con tu contraseña para vincular tus datos biométricos.');
+      return;
+    }
+
+    setIsBiometricAuthenticating(true);
+    setLoginError('');
+
+    try {
+      const authRes = await authenticateWithBiometrics(savedBiometricUser, biometricType);
+      if (authRes.success) {
+        sessionStorage.setItem('maint_session_active', 'true');
+        localStorage.setItem('maint_user', JSON.stringify(savedBiometricUser));
+        setCurrentUser(savedBiometricUser);
+        setMaintToast({
+          mostrar: true,
+          titulo: 'Acceso Biométrico Concedido',
+          mensaje: `¡Bienvenido de vuelta, ${savedBiometricUser.nombre}!`,
+          tipo: 'success'
+        });
+      } else if (authRes.error) {
+        setLoginError(authRes.error);
+      }
+    } catch (err: any) {
+      console.log("Fallo o cancelación biométrica:", err);
+      setLoginError('No se pudo verificar la identidad biométrica. Ingresa con tu contraseña.');
+    } finally {
+      setIsBiometricAuthenticating(false);
     }
   };
 
@@ -1192,7 +1598,7 @@ export default function App() {
 
     try {
       localStorage.setItem('maint_user', JSON.stringify(updatedUser));
-    } catch (err) {}
+    } catch {}
 
     if (isSupabaseConfigured) {
       supabase.from('usuarios').update({
@@ -1291,18 +1697,47 @@ export default function App() {
   };
 
   const userVisibleCases = cases.filter(c => isCaseVisibleToUser(c, currentUser));
+  const activeCases = userVisibleCases.filter(c => c.estado !== 'concluido' && c.estado !== 'cerrado');
+  const concludedCases = userVisibleCases.filter(c => c.estado === 'concluido' || c.estado === 'cerrado');
+  const pendingUnassigned = activeCases.filter(c => c.estado === 'pendiente');
+  const inProgressCases = activeCases.filter(c => c.estado === 'en_proceso' && !c.pausado_por_material);
+  const pausedCases = activeCases.filter(c => Boolean(c.pausado_por_material));
+
+  const getHumanDate = (dateStr?: string) => {
+    if (!dateStr) return '';
+    try {
+      const d = new Date(dateStr);
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMins / 60);
+      const diffDays = Math.floor(diffHours / 24);
+
+      if (diffMins < 5) return 'Hace unos momentos';
+      if (diffMins < 60) return `Hace ${diffMins} min`;
+      if (diffHours < 24) return `Hoy (${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`;
+      if (diffDays === 1) return `Ayer (${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`;
+      return d.toLocaleDateString();
+    } catch {
+      return '';
+    }
+  };
 
   const getFilteredCases = (): Case[] => {
-    let list = cases.filter(c => isCaseVisibleToUser(c, currentUser));
+    let list: Case[] = [];
 
-    if (statusFilter === 'pendiente') {
-      list = list.filter(c => c.estado === 'pendiente');
-    } else if (statusFilter === 'en_proceso') {
-      list = list.filter(c => c.estado === 'en_proceso' && !c.pausado_por_material);
-    } else if (statusFilter === 'pausado_material') {
-      list = list.filter(c => Boolean(c.pausado_por_material) && c.estado !== 'concluido' && c.estado !== 'cerrado');
-    } else if (statusFilter === 'completado') {
-      list = list.filter(c => c.estado === 'concluido' || c.estado === 'cerrado');
+    if (casesViewMode === 'concluidos' || statusFilter === 'completado') {
+      list = [...concludedCases];
+    } else {
+      if (statusFilter === 'pendiente') {
+        list = activeCases.filter(c => c.estado === 'pendiente');
+      } else if (statusFilter === 'en_proceso') {
+        list = activeCases.filter(c => c.estado === 'en_proceso' && !c.pausado_por_material);
+      } else if (statusFilter === 'pausado_material') {
+        list = activeCases.filter(c => Boolean(c.pausado_por_material));
+      } else {
+        list = [...activeCases];
+      }
     }
 
     if (storeFilter !== 'todos') {
@@ -1311,11 +1746,14 @@ export default function App() {
 
     if (searchTerm.trim() !== '') {
       const q = searchTerm.toLowerCase();
+      const storeMatches = stores.filter(s => s.nombre.toLowerCase().includes(q) || s.ciudad.toLowerCase().includes(q) || (s.direccion && s.direccion.toLowerCase().includes(q))).map(s => s.id);
       list = list.filter(c => 
         c.id.toString().includes(q) || 
         getCaseDisplayCode(c).toLowerCase().includes(q) ||
         c.descripcion.toLowerCase().includes(q) || 
-        c.categoria.toLowerCase().includes(q)
+        c.categoria.toLowerCase().includes(q) ||
+        storeMatches.includes(c.tiendaId) ||
+        (c.tecnico_presencial_nombre && c.tecnico_presencial_nombre.toLowerCase().includes(q))
       );
     }
 
@@ -1402,7 +1840,8 @@ export default function App() {
     e.preventDefault();
     if (!currentUser || !newCategoryText.trim() || !newDesc.trim()) return;
 
-    const tiendaId = currentUser.tiendaId || 1;
+    const isStoreUser = currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe';
+    const tiendaId = isStoreUser ? (currentUser.tiendaId || 1) : (newCaseStoreId || currentUser.tiendaId || 1);
     const now = new Date();
     const limit = new Date(now.getTime() + getSlaHours(newPriority) * 3600000).toISOString();
     const newId = cases.length > 0 ? Math.max(...cases.map(c => c.id)) + 1 : 1001;
@@ -1418,6 +1857,31 @@ export default function App() {
       nombreArchivo: `foto_danio_${index + 1}.jpg`,
       fecha: now.toISOString()
     }));
+
+    // Preparar materiales solicitados por adelantado
+    const validPreMaterials = newPreMaterialItems
+      .map(item => ({
+        id: item.id,
+        nombre: (item.nombre || '').trim(),
+        cantidad: Math.max(1, Number(item.cantidad) || 1)
+      }))
+      .filter(item => item.nombre.length > 0);
+
+    if (validPreMaterials.length === 0 && newPreMaterialName.trim()) {
+      validPreMaterials.push({
+        id: Date.now(),
+        nombre: newPreMaterialName.trim(),
+        cantidad: Math.max(1, Number(newPreMaterialQty) || 1)
+      });
+    }
+
+    const hasPreMaterials = newRequestPreMaterial && validPreMaterials.length > 0;
+    const preMaterialsSummary = hasPreMaterials
+      ? validPreMaterials.map(m => `${m.cantidad}x ${m.nombre}`).join(' | ')
+      : undefined;
+    const preMaterialsTotalQty = hasPreMaterials
+      ? validPreMaterials.reduce((sum, m) => sum + m.cantidad, 0)
+      : undefined;
 
     const newCase: Case = {
       id: newId,
@@ -1450,10 +1914,11 @@ export default function App() {
         agendado_por: currentUser.nombre,
         ...(assignedTechUser ? { tecnicoAsignadoId: assignedTechUser.id, tecnico_presencial_nombre: assignedTechUser.nombre } : {})
       } : {}),
-      ...(newRequestPreMaterial && newPreMaterialName.trim() ? {
+      ...(hasPreMaterials ? {
         solicitud_material_anticipada: true,
-        material_anticipado_nombre: newPreMaterialName.trim(),
-        material_anticipado_cantidad: newPreMaterialQty,
+        material_anticipado_nombre: preMaterialsSummary,
+        material_anticipado_cantidad: preMaterialsTotalQty,
+        material_anticipado_items: validPreMaterials,
         material_anticipado_estado: 'pendiente_aprobacion'
       } : {})
     };
@@ -1478,15 +1943,58 @@ export default function App() {
           agendado_por: currentUser.nombre,
           ...(assignedTechUser ? { tecnico_asignado_id: assignedTechUser.id, tecnico_presencial_nombre: assignedTechUser.nombre } : {})
         } : {}),
-        ...(newRequestPreMaterial && newPreMaterialName.trim() ? {
+        ...(hasPreMaterials ? {
           solicitud_material_anticipada: true,
-          material_anticipado_nombre: newPreMaterialName.trim(),
-          material_anticipado_cantidad: newPreMaterialQty,
+          material_anticipado_nombre: preMaterialsSummary,
+          material_anticipado_cantidad: preMaterialsTotalQty,
+          material_anticipado_items: validPreMaterials,
           material_anticipado_estado: 'pendiente_aprobacion'
         } : {})
       }]).then(({ error }: any) => {
         if (error) console.error("Error al crear caso en Supabase:", error);
       });
+    }
+
+    // Registrar pedidos en pedidos_materiales si el usuario solicitó materiales por adelantado
+    if (hasPreMaterials) {
+      const createdRequests: MaterialRequest[] = validPreMaterials.map((mat, idx) => {
+        const reqId = Date.now() + idx + Math.floor(Math.random() * 1000);
+        return {
+          id: reqId,
+          casoId: newId,
+          tecnicoId: currentUser.id,
+          descripcion: `📦 [Pedido Inicial] ${mat.cantidad}x ${mat.nombre}`,
+          estado: 'pendiente',
+          createdAt: now.toISOString(),
+          solicitadoPorId: currentUser.id,
+          solicitadoPorNombre: currentUser.nombre,
+          solicitadoPorRol: currentUser.rol,
+          cantidad: mat.cantidad,
+          materialNombre: mat.nombre,
+          tiendaId: tiendaId
+        };
+      });
+
+      setMaterialRequests(prev => [...createdRequests, ...prev]);
+
+      if (isSupabaseConfigured) {
+        const supabaseRows = createdRequests.map(r => ({
+          id: r.id,
+          caso_id: newId,
+          tecnico_id: currentUser.id,
+          solicitado_por_id: currentUser.id,
+          solicitado_por_nombre: currentUser.nombre,
+          solicitado_por_rol: currentUser.rol,
+          tienda_id: tiendaId,
+          descripcion: r.descripcion,
+          cantidad: r.cantidad,
+          material_nombre: r.materialNombre,
+          estado: 'pendiente'
+        }));
+        supabase.from('pedidos_materiales').insert(supabaseRows).then(({ error }: any) => {
+          if (error) console.error("Error al registrar pedidos_materiales anticipados:", error);
+        });
+      }
     }
     
     // Dispatch notification
@@ -1505,6 +2013,7 @@ export default function App() {
     setNewRequestPreMaterial(false);
     setNewPreMaterialName('');
     setNewPreMaterialQty(1);
+    setNewPreMaterialItems([{ id: Date.now(), nombre: '', cantidad: 1 }]);
     setShowNewCaseModal(false);
     setSelectedCaseId(newId);
   };
@@ -1523,11 +2032,12 @@ export default function App() {
 
     setCases(prev => prev.map(c => {
       if (c.id === caseId) {
-        const alreadyExists = c.comentarios.some(co => co.texto === newComment.texto && co.autor === newComment.autor);
+        const currentComms = c.comentarios || [];
+        const alreadyExists = currentComms.some(co => co.texto === newComment.texto && co.autor === newComment.autor);
         if (alreadyExists) return c;
         return {
           ...c,
-          comentarios: [...c.comentarios, newComment]
+          comentarios: [...currentComms, newComment]
         };
       }
       return c;
@@ -1635,9 +2145,11 @@ export default function App() {
     
     
 
+    const assignedStoreId = techCaseStoreId || (stores[0]?.id || 1);
+
     const newCase: Case = {
       id: newId,
-      tiendaId: techCaseStoreId || 0,
+      tiendaId: assignedStoreId,
       creadoPor: currentUser.id,
       categoria: techCaseCategory.trim(),
       descripcion: techCaseDesc.trim(),
@@ -1662,7 +2174,7 @@ export default function App() {
     if (isSupabaseConfigured) {
       supabase.from('casos').insert([{
         id: newId,
-        tienda_id: techCaseStoreId || null,
+        tienda_id: assignedStoreId,
         creado_por: currentUser.id,
         categoria: techCaseCategory.trim(),
         descripcion: techCaseDesc.trim(),
@@ -1694,6 +2206,120 @@ export default function App() {
     setTechStatus('Trabajando en tienda');
     setShowNewTechCaseModal(false);
     setSelectedCaseId(newId);
+  };
+
+  // ==========================================
+  // PERMISOS Y ACCIONES: EDITAR Y ELIMINAR CASO
+  // ==========================================
+  const canEditOrDeleteCase = (c: Case) => {
+    if (!currentUser) return false;
+    // Si el usuario es el creador del caso (sea técnico o local)
+    if (c.creadoPor === currentUser.id) return true;
+    // Si es usuario tienda (jefe_tienda o subjefe) y el caso pertenece a su tienda
+    if ((currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && currentUser.tiendaId === c.tiendaId) return true;
+    // Administradores y supervisores también tienen facultades de gestión
+    if (currentUser.rol === 'administrador' || currentUser.rol === 'supervisor') return true;
+    return false;
+  };
+
+  const handleOpenEditCase = (c: Case) => {
+    setEditingCase(c);
+    setShowEditCaseModal(true);
+  };
+
+  const handleOpenDeleteCase = (c: Case) => {
+    setDeletingCase(c);
+    setShowDeleteCaseModal(true);
+  };
+
+  const handleSaveEditCase = async (updated: {
+    categoria: string;
+    descripcion: string;
+    prioridad: number;
+    tiendaId: number;
+  }) => {
+    if (!editingCase) return;
+    const caseId = editingCase.id;
+
+    // Actualizar en React State
+    setCases(prev => prev.map(c => c.id === caseId ? {
+      ...c,
+      categoria: updated.categoria,
+      descripcion: updated.descripcion,
+      prioridad: updated.prioridad,
+      tiendaId: updated.tiendaId
+    } : c));
+
+    // Actualizar en Supabase si está configurado
+    if (isSupabaseConfigured) {
+      try {
+        const { error } = await supabase
+          .from('casos')
+          .update({
+            categoria: updated.categoria,
+            descripcion: updated.descripcion,
+            prioridad_nivel: updated.prioridad,
+            tienda_id: updated.tiendaId
+          })
+          .eq('id', caseId);
+
+        if (error) {
+          console.error("Error al actualizar caso en Supabase:", error);
+        } else {
+          // Registrar comentario de auditoría
+          await supabase.from('comentarios').insert([{
+            caso_id: caseId,
+            autor: currentUser?.nombre || 'Usuario',
+            rol: currentUser?.rol || 'sistema',
+            texto: `✏️ Caso editado por ${currentUser?.nombre || 'Usuario'}: se actualizó la categoría y/o descripción.`,
+            fecha: new Date().toISOString()
+          }]);
+        }
+      } catch (err) {
+        console.error("Error al guardar edición en Supabase:", err);
+      }
+    }
+
+    setMaintToast({
+      mostrar: true,
+      titulo: 'Caso Actualizado',
+      mensaje: `El Caso #${String(caseId).padStart(4, '0')} se ha modificado exitosamente.`,
+      tipo: 'success'
+    });
+  };
+
+  const handleConfirmDeleteCase = async () => {
+    if (!deletingCase) return;
+    const caseId = deletingCase.id;
+
+    // Eliminar de React State
+    setCases(prev => prev.filter(c => c.id !== caseId));
+    if (selectedCaseId === caseId) {
+      setSelectedCaseId(null);
+    }
+
+    // Eliminar de Supabase si está configurado
+    if (isSupabaseConfigured) {
+      try {
+        // Eliminar registros dependientes primero para evitar conflictos de clave foránea
+        await supabase.from('comentarios').delete().eq('caso_id', caseId);
+        await supabase.from('evidencias').delete().eq('caso_id', caseId);
+        await supabase.from('notificaciones').delete().eq('caso_id', caseId);
+        const { error } = await supabase.from('casos').delete().eq('id', caseId);
+        if (error) {
+          console.error("Error al eliminar caso en Supabase:", error);
+        }
+      } catch (err) {
+        console.error("Error al eliminar caso en Supabase:", err);
+      }
+    }
+
+    setMaintToast({
+      mostrar: true,
+      titulo: 'Caso Eliminado',
+      mensaje: `El Caso #${String(caseId).padStart(4, '0')} fue eliminado correctamente.`,
+      tipo: 'success'
+    });
   };
 
   const notifyCommentParties = (caseId: number, commentText: string) => {
@@ -1796,30 +2422,55 @@ export default function App() {
     return [];
   };
 
-  // Handler para Pausar Caso por Materiales / Presupuesto (Solo Locales, Supervisores y Admins)
-  const handlePauseCaseForMaterial = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentUser || !selectedCaseId || !pauseReasonInput.trim()) return;
-
+  // Helper para Pausar Caso directamente (usado por modal de pausa y timbrador)
+  const handlePauseCaseDirect = (caseId: number, reason: string) => {
+    if (!currentUser) return;
     const now = new Date().toISOString();
-    const caseId = selectedCaseId;
-    const reason = pauseReasonInput.trim();
 
     setCases(prev => prev.map(c => {
       if (c.id === caseId) {
+        const currentJornadas = getCaseJornadas(c);
+        let updatedJornadas = [...currentJornadas];
+        if (updatedJornadas.length > 0) {
+          const lastIdx = updatedJornadas.length - 1;
+          if (!updatedJornadas[lastIdx].horaSalida) {
+            updatedJornadas[lastIdx] = {
+              ...updatedJornadas[lastIdx],
+              horaSalida: now,
+              motivoPausa: reason,
+              tipoSalida: 'pausa_material',
+              registradoSalidaPor: currentUser.nombre
+            };
+          }
+        } else if (c.hora_entrada) {
+          updatedJornadas = [{
+            id: 1,
+            numeroVisita: 1,
+            tecnicoNombre: c.tecnico_presencial_nombre || currentUser.nombre,
+            horaEntrada: c.hora_entrada,
+            horaSalida: now,
+            motivoPausa: reason,
+            tipoSalida: 'pausa_material',
+            registradoEntradaPor: 'Sistema',
+            registradoSalidaPor: currentUser.nombre
+          }];
+        }
+
         return {
           ...c,
           pausado_por_material: true,
           motivo_pausa_material: reason,
           fecha_pausa_material: now,
           materiales_llegaron_tienda: false,
+          hora_salida: now,
+          jornadas: updatedJornadas,
           comentarios: [
             ...c.comentarios,
             {
               id: Date.now(),
               autor: currentUser.nombre,
               rol: currentUser.rol,
-              texto: `⏸️ CASO PAUSADO POR MATERIALES / PRESUPUESTO: "${reason}". El caso queda en espera de adquisición o llegada de repuestos.`,
+              texto: `⏸️ CASO PAUSADO (${currentUser.rol === 'tecnico' ? 'Técnico' : currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe' ? 'Local' : currentUser.rol}): "${reason}". Se registró la salida del técnico a las ${new Date(now).toLocaleTimeString()} en espera de materiales o solución.`,
               fecha: now
             }
           ],
@@ -1837,7 +2488,8 @@ export default function App() {
         pausado_por_material: true,
         motivo_pausa_material: reason,
         fecha_pausa_material: now,
-        materiales_llegaron_tienda: false
+        materiales_llegaron_tienda: false,
+        hora_salida: now
       }).eq('id', caseId).then(({ error }: any) => {
         if (error) console.error("Error al pausar caso en Supabase:", error);
 
@@ -1851,12 +2503,19 @@ export default function App() {
       });
     }
 
+    const targetCase = cases.find(c => c.id === caseId);
     pushNotification(
       `⏸️ Caso #${caseId} puesto en pausa por falta de materiales/presupuesto: ${reason}`,
       'estado_cambio',
-      { casoId: caseId, tiendaId: selectedCase?.tiendaId }
+      { casoId: caseId, tiendaId: targetCase?.tiendaId }
     );
+  };
 
+  // Handler para Pausar Caso por Materiales / Imprevisto (Técnicos, Locales, Supervisores y Admins)
+  const handlePauseCaseForMaterial = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser || !selectedCaseId || !pauseReasonInput.trim()) return;
+    handlePauseCaseDirect(selectedCaseId, pauseReasonInput.trim());
     setShowPauseMaterialModal(false);
     setPauseReasonInput('');
   };
@@ -1929,6 +2588,21 @@ export default function App() {
     const isTeam = takeCaseMode === 'equipo' && takeCaseSupportTech.trim() !== '';
     const supportName = isTeam ? takeCaseSupportTech.trim() : undefined;
     const mainName = currentUser.nombre;
+    const techDisplay = isTeam ? `${mainName} & ${supportName}` : mainName;
+
+    const targetCase = cases.find(c => c.id === caseId);
+    if (!targetCase) return;
+
+    const currentJornadas = getCaseJornadas(targetCase);
+    const newJornadaEntry: JornadaAsistencia = {
+      id: Date.now(),
+      numeroVisita: currentJornadas.length + 1,
+      tecnicoNombre: techDisplay,
+      horaEntrada: now,
+      horaSalida: undefined,
+      registradoEntradaPor: currentUser.nombre
+    };
+    const updatedJornadas = [...currentJornadas, newJornadaEntry];
 
     setCases(cases.map(c => {
       if (c.id === caseId) {
@@ -1938,7 +2612,12 @@ export default function App() {
           tecnicoAsignadoId: currentUser.id,
           tecnico_presencial_nombre: mainName,
           tecnico_apoyo_nombre: supportName,
-          hora_entrada: c.hora_entrada || now,
+          hora_entrada: now,
+          hora_salida: undefined,
+          pausado_por_material: false,
+          motivo_pausa_material: undefined,
+          fecha_pausa_material: undefined,
+          jornadas: updatedJornadas,
           comentarios: [
             ...c.comentarios,
             {
@@ -1946,8 +2625,8 @@ export default function App() {
               autor: currentUser.nombre,
               rol: currentUser.rol,
               texto: isTeam
-                ? `👥 TRABAJO EN EQUIPO: Los técnicos ${mainName} y ${supportName} se han puesto a trabajar juntos en este caso.`
-                : `👷 Técnico ${mainName} tomó la asignación de este caso y comenzó la atención.`,
+                ? `👥 TRABAJO EN EQUIPO: Los técnicos ${mainName} y ${supportName} se han puesto a trabajar juntos en este caso presencialmente.`
+                : `👷 Técnico ${mainName} tomó la asignación de este caso y comenzó la atención presencial.`,
               fecha: now
             }
           ],
@@ -1960,13 +2639,32 @@ export default function App() {
       return c;
     }));
 
+    // Iniciar Timbrador activo inmediatamente para el técnico
+    const punch: ActiveTechPunchClock = {
+      tecnicoId: currentUser.id,
+      tecnicoNombre: currentUser.nombre,
+      tiendaId: targetCase.tiendaId,
+      casoId: caseId,
+      horaIngreso: now,
+      numeroVisita: updatedJornadas.length,
+      esNuevoCaso: Boolean(targetCase.es_caso_tecnico)
+    };
+    setActivePunchClock(punch);
+    try {
+      localStorage.setItem(`maint_tech_punch_${currentUser.id}`, JSON.stringify(punch));
+    } catch {}
+
     if (isSupabaseConfigured) {
       supabase.from('casos').update({
         estado: 'en_proceso',
         tecnico_asignado_id: currentUser.id,
         tecnico_presencial_nombre: mainName,
         tecnico_apoyo_nombre: supportName || null,
-        hora_entrada: now
+        hora_entrada: now,
+        hora_salida: null,
+        pausado_por_material: false,
+        motivo_pausa_material: null,
+        fecha_pausa_material: null
       }).eq('id', caseId).then(({ error }: any) => {
         if (error) console.error("Error al actualizar caso en Supabase:", error);
 
@@ -1975,14 +2673,14 @@ export default function App() {
           autor: currentUser.nombre,
           rol: currentUser.rol,
           texto: isTeam
-            ? `👥 TRABAJO EN EQUIPO: Los técnicos ${mainName} y ${supportName} se han puesto a trabajar juntos en este caso.`
-            : `👷 Técnico ${mainName} tomó la asignación de este caso y comenzó la atención.`,
+            ? `👥 TRABAJO EN EQUIPO: Los técnicos ${mainName} y ${supportName} se han puesto a trabajar juntos en este caso presencialmente.`
+            : `👷 Técnico ${mainName} tomó la asignación de este caso y comenzó la atención presencial.`,
           fecha: now
         }]);
       });
     }
 
-    const storeId = cases.find(c => c.id === caseId)?.tiendaId || 1;
+    const storeId = targetCase.tiendaId || 1;
     pushNotification(
       isTeam
         ? `👥 TRABAJO EN EQUIPO: Técnicos ${mainName} y ${supportName} tomaron el Caso #${caseId}.`
@@ -1991,6 +2689,13 @@ export default function App() {
       { tiendaId: storeId, casoId: caseId, estadoNuevo: 'en_proceso' }
     );
 
+    setMaintToast({
+      mostrar: true,
+      titulo: '⚡ Caso Tomado',
+      mensaje: `Iniciaste atención en el Caso #${caseId}. Timbrador presencial activo.`,
+      tipo: 'success'
+    });
+
     setShowTakeCaseModal(false);
   };
 
@@ -1998,24 +2703,54 @@ export default function App() {
 
   // Conclude Case
   const [solutionDesc, setSolutionDesc] = useState('');
-  const handleConcludeCase = (e: React.FormEvent, caseId: number) => {
-    e.preventDefault();
-    if (!currentUser || !solutionDesc.trim()) return;
+
+  // Helper directo para Concluir Caso (usado por SolveModal y por el Timbrador)
+  const handleConcludeCaseDirect = (caseId: number, solutionText: string, evidencePhotos: string[]) => {
+    if (!currentUser) return;
+
+    const desc = solutionText.trim() || 'Trabajo técnico finalizado y solucionado conforme en tienda.';
+    const currentEvidence = [...evidencePhotos];
 
     const now = new Date().toISOString();
     const targetCase = cases.find(c => c.id === caseId);
     const exitTime = now;
 
-    setCases(cases.map(c => {
+    setCases(prev => prev.map(c => {
       if (c.id === caseId) {
+        const currentJornadas = getCaseJornadas(c);
+        let updatedJornadas = [...currentJornadas];
+        if (updatedJornadas.length > 0) {
+          const lastIdx = updatedJornadas.length - 1;
+          if (!updatedJornadas[lastIdx].horaSalida) {
+            updatedJornadas[lastIdx] = {
+              ...updatedJornadas[lastIdx],
+              horaSalida: exitTime,
+              tipoSalida: 'conclusion_final',
+              registradoSalidaPor: currentUser.nombre
+            };
+          }
+        } else if (c.hora_entrada) {
+          updatedJornadas = [{
+            id: 1,
+            numeroVisita: 1,
+            tecnicoNombre: c.tecnico_presencial_nombre || currentUser.nombre,
+            horaEntrada: c.hora_entrada,
+            horaSalida: exitTime,
+            tipoSalida: 'conclusion_final',
+            registradoEntradaPor: 'Sistema',
+            registradoSalidaPor: currentUser.nombre
+          }];
+        }
+
         return {
           ...c,
           estado: 'concluido' as const,
           fechaCierre: now,
-          hora_salida: c.hora_salida || exitTime,
+          hora_salida: exitTime,
+          jornadas: updatedJornadas,
           evidencias: [
-            ...c.evidencias,
-            ...solveEvidenceFiles.map((base64, index) => ({
+            ...(c.evidencias || []),
+            ...currentEvidence.map((base64, index) => ({
               id: Date.now() + index,
               subidoPor: currentUser.nombre,
               tipo: 'final' as const,
@@ -2025,11 +2760,11 @@ export default function App() {
             }))
           ],
           comentarios: [
-            ...c.comentarios,
-            { id: Date.now(), autor: currentUser.nombre, rol: currentUser.rol, texto: `Solución aplicada: ${solutionDesc.trim()}`, fecha: now }
+            ...(c.comentarios || []),
+            { id: Date.now(), autor: currentUser.nombre, rol: currentUser.rol, texto: `✅ TRABAJO CONCLUIDO Y SALIDA REGISTRADA (${new Date(exitTime).toLocaleTimeString()}): "${desc}". En espera de validación de tienda.`, fecha: now }
           ],
           historial: [
-            ...c.historial,
+            ...(c.historial || []),
             { id: Date.now(), estadoAnterior: c.estado, estadoNuevo: 'concluido', usuario: currentUser.nombre, fecha: now }
           ]
         };
@@ -2040,17 +2775,15 @@ export default function App() {
     if (isSupabaseConfigured) {
       const updateObj: any = {
         estado: 'concluido',
-        fecha_cierre: now
+        fecha_cierre: now,
+        hora_salida: exitTime
       };
-      if (!targetCase?.hora_salida) {
-        updateObj.hora_salida = exitTime;
-      }
 
       supabase.from('casos').update(updateObj).eq('id', caseId).then(({ error: errCase }: any) => {
         if (errCase) console.error("Error al concluir caso en Supabase:", errCase);
         
-        if (solveEvidenceFiles.length > 0) {
-          const inserts = solveEvidenceFiles.map((base64, index) => ({
+        if (currentEvidence.length > 0) {
+          const inserts = currentEvidence.map((base64, index) => ({
             caso_id: caseId,
             subido_por: currentUser.nombre,
             tipo: 'final',
@@ -2067,7 +2800,7 @@ export default function App() {
           caso_id: caseId,
           autor: currentUser.nombre,
           rol: currentUser.rol,
-          texto: `Solución aplicada: ${solutionDesc.trim()}`,
+          texto: `Solución aplicada: ${desc}`,
           fecha: now
         }]).then(({ error: errCom }: any) => {
           if (errCom) console.error("Error al guardar comentario de solución en Supabase:", errCom);
@@ -2075,15 +2808,24 @@ export default function App() {
       });
     }
 
-    const storeId = cases.find(c => c.id === caseId)?.tiendaId || 1;
+    const storeId = targetCase?.tiendaId || 1;
     pushNotification(
       `✅ Caso #${caseId} CONCLUIDO por técnico ${currentUser.nombre}.`,
       'estado_cambio',
       { tiendaId: storeId, casoId: caseId, estadoNuevo: 'concluido' }
     );
+  };
+
+  const handleConcludeCase = (e: React.FormEvent, caseId: number) => {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
+    if (!currentUser) return;
+
+    setShowSolveModal(false);
+    handleConcludeCaseDirect(caseId, solutionDesc, solveEvidenceFiles);
     setSolutionDesc('');
     setSolveEvidenceFiles([]);
-    setShowSolveModal(false);
   };
 
   // Close Case
@@ -2127,20 +2869,53 @@ export default function App() {
     const now = new Date().toISOString();
     const targetTech = users.find(u => u.nombre.toLowerCase().trim() === name.toLowerCase().trim() && u.rol === 'tecnico');
 
-    setCases(cases.map(c => {
+    setCases(prev => prev.map(c => {
       if (c.id === caseId) {
+        const currentJornadas = getCaseJornadas(c);
+        let updatedJornadas = [...currentJornadas];
+        if (updatedJornadas.length > 0) {
+          // Si ya había visitas, se añade la siguiente jornada (ej: Visita #2 tras la pausa)
+          updatedJornadas.push({
+            id: Date.now(),
+            numeroVisita: updatedJornadas.length + 1,
+            tecnicoNombre: name,
+            horaEntrada: now,
+            horaSalida: undefined,
+            registradoEntradaPor: currentUser!.nombre
+          });
+        } else {
+          updatedJornadas = [{
+            id: 1,
+            numeroVisita: 1,
+            tecnicoNombre: name,
+            horaEntrada: now,
+            horaSalida: undefined,
+            registradoEntradaPor: currentUser!.nombre
+          }];
+        }
+
+        const isReentry = c.pausado_por_material || Boolean(c.hora_salida);
+        const logText = isReentry
+          ? `🟢 REINGRESO A TIENDA (Visita #${updatedJornadas.length}): ${currentUser!.nombre} registró el reingreso del técnico ${name} a las ${new Date(now).toLocaleTimeString()} para reanudar el trabajo.`
+          : `⏱️ INGRESO A TIENDA: ${currentUser!.nombre} registró el ingreso presencial del técnico ${name} a las ${new Date(now).toLocaleTimeString()} e inició el caso.`;
+
         return {
           ...c,
           estado: 'en_proceso' as const,
+          pausado_por_material: false,
+          motivo_pausa_material: undefined,
+          fecha_pausa_material: undefined,
           tecnicoAsignadoId: targetTech?.id || c.tecnicoAsignadoId,
           tecnico_presencial_nombre: name,
           hora_entrada: now,
+          hora_salida: undefined,
+          jornadas: updatedJornadas,
           comentarios: [
-            ...c.comentarios,
-            { id: Date.now(), autor: currentUser!.nombre, rol: currentUser!.rol, texto: `⏱️ INGRESO A TIENDA: ${currentUser!.nombre} (${currentUser!.rol === 'jefe_tienda' ? 'Jefe de Tienda' : currentUser!.rol}) registró el ingreso presencial del técnico ${name} a las ${new Date(now).toLocaleTimeString()} e inició el caso.`, fecha: now }
+            ...(c.comentarios || []),
+            { id: Date.now(), autor: currentUser!.nombre, rol: currentUser!.rol, texto: logText, fecha: now }
           ],
           historial: [
-            ...c.historial,
+            ...(c.historial || []),
             { id: Date.now(), estadoAnterior: c.estado, estadoNuevo: 'en_proceso', usuario: currentUser!.nombre, fecha: now }
           ]
         };
@@ -2151,9 +2926,13 @@ export default function App() {
     if (isSupabaseConfigured) {
       supabase.from('casos').update({
         estado: 'en_proceso',
+        pausado_por_material: false,
+        motivo_pausa_material: null,
+        fecha_pausa_material: null,
         tecnico_asignado_id: targetTech?.id || undefined,
         tecnico_presencial_nombre: name,
-        hora_entrada: now
+        hora_entrada: now,
+        hora_salida: null
       }).eq('id', caseId).then(({ error }: any) => {
         if (error) console.error("Error al registrar entrada en Supabase:", error);
         
@@ -2178,13 +2957,13 @@ export default function App() {
   const handleLogTechExit = (caseId: number) => {
     const now = new Date().toISOString();
 
-    setCases(cases.map(c => {
+    setCases(prev => prev.map(c => {
       if (c.id === caseId) {
         return {
           ...c,
           hora_salida: now,
           comentarios: [
-            ...c.comentarios,
+            ...(c.comentarios || []),
             { id: Date.now(), autor: currentUser!.nombre, rol: currentUser!.rol, texto: `⏱️ SALIDA REGISTRADA: Técnico se retiró de la tienda a las ${new Date(now).toLocaleTimeString()}`, fecha: now }
           ]
         };
@@ -2212,6 +2991,221 @@ export default function App() {
       `⏱️ SALIDA REGISTRADA: El técnico se retiró del local para el caso #${caseId}.`,
       'estado_cambio',
       { casoId: caseId, tiendaId: currentUser!.tiendaId }
+    );
+  };
+
+  // ==========================================
+  // SINCRONIZACIÓN Y GESTIÓN DEL TIMBRADOR (TÉCNICOS)
+  // ==========================================
+  useEffect(() => {
+    if (!currentUser || currentUser.rol !== 'tecnico') {
+      setActivePunchClock(null);
+      return;
+    }
+
+    // Buscar si el técnico tiene un caso activo en proceso en el que ya timbró entrada y no ha salido
+    const activeCase = cases.find(c =>
+      (c.tecnicoAsignadoId === currentUser.id || (c.tecnico_presencial_nombre && c.tecnico_presencial_nombre.toLowerCase().includes(currentUser.nombre.toLowerCase()))) &&
+      c.estado === 'en_proceso' &&
+      Boolean(c.hora_entrada) &&
+      !c.hora_salida &&
+      !c.pausado_por_material
+    );
+
+    if (activeCase) {
+      const caseJornadas = getCaseJornadas(activeCase);
+      const lastJornada = caseJornadas[caseJornadas.length - 1];
+      const entryTime = (lastJornada && !lastJornada.horaSalida) ? lastJornada.horaEntrada : (activeCase.hora_entrada || new Date().toISOString());
+
+      const punch: ActiveTechPunchClock = {
+        tecnicoId: currentUser.id,
+        tecnicoNombre: currentUser.nombre,
+        tiendaId: activeCase.tiendaId,
+        casoId: activeCase.id,
+        horaIngreso: entryTime,
+        numeroVisita: caseJornadas.length || 1,
+        esNuevoCaso: Boolean(activeCase.es_caso_tecnico)
+      };
+      setActivePunchClock(punch);
+      try {
+        localStorage.setItem(`maint_tech_punch_${currentUser.id}`, JSON.stringify(punch));
+      } catch {}
+    } else {
+      setActivePunchClock(null);
+      try {
+        localStorage.removeItem(`maint_tech_punch_${currentUser.id}`);
+      } catch {}
+    }
+  }, [currentUser, cases]);
+
+  // Handler para Timbrar Ingreso a Tienda (Clock In)
+  const handleTechClockIn = async (data: {
+    tiendaId: number;
+    useExistingCase: boolean;
+    existingCaseId?: number;
+    newCaseData?: {
+      categoria: string;
+      descripcion: string;
+      prioridad: number;
+      fotosIniciales: string[];
+    };
+  }) => {
+    if (!currentUser) return;
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    if (data.useExistingCase && data.existingCaseId) {
+      const targetCase = cases.find(c => c.id === data.existingCaseId);
+      handleLogTechEntry(data.existingCaseId, currentUser.nombre);
+
+      const targetJornadas = targetCase ? getCaseJornadas(targetCase) : [];
+      const punch: ActiveTechPunchClock = {
+        tecnicoId: currentUser.id,
+        tecnicoNombre: currentUser.nombre,
+        tiendaId: data.tiendaId,
+        casoId: data.existingCaseId,
+        horaIngreso: nowIso,
+        numeroVisita: targetJornadas.length + 1,
+        esNuevoCaso: false
+      };
+      setActivePunchClock(punch);
+      try {
+        localStorage.setItem(`maint_tech_punch_${currentUser.id}`, JSON.stringify(punch));
+      } catch {}
+
+      pushNotification(
+        `⏱️ INGRESO TIMBRADO: ${currentUser.nombre} timbró su ingreso en ${stores.find(s => s.id === data.tiendaId)?.nombre || `Tienda #${data.tiendaId}`} (Caso #${data.existingCaseId}).`,
+        'estado_cambio',
+        { tiendaId: data.tiendaId, casoId: data.existingCaseId }
+      );
+      setSelectedCaseId(data.existingCaseId);
+      return data.existingCaseId;
+    } else if (data.newCaseData) {
+      const limit = new Date(now.getTime() + 48 * 3600000).toISOString();
+      const newId = cases.length > 0 ? Math.max(...cases.map(c => c.id)) + 1 : 2001;
+
+      const newCase: Case = {
+        id: newId,
+        tiendaId: data.tiendaId,
+        creadoPor: currentUser.id,
+        categoria: data.newCaseData.categoria,
+        descripcion: data.newCaseData.descripcion,
+        prioridad: data.newCaseData.prioridad,
+        estado: 'en_proceso',
+        tecnicoAsignadoId: currentUser.id,
+        fechaCreacion: nowIso,
+        fechaLimiteSla: limit,
+        es_caso_tecnico: true,
+        tecnico_estatus_trabajo: 'Trabajando en tienda',
+        tecnico_presencial_nombre: currentUser.nombre,
+        hora_entrada: nowIso,
+        jornadas: [{
+          id: Date.now(),
+          numeroVisita: 1,
+          tecnicoNombre: currentUser.nombre,
+          horaEntrada: nowIso,
+          horaSalida: undefined,
+          registradoEntradaPor: currentUser.nombre
+        }],
+        evidencias: (data.newCaseData.fotosIniciales || []).map((b64, idx) => ({
+          id: Date.now() + idx,
+          subidoPor: currentUser.nombre,
+          tipo: 'inicial',
+          archivoUrl: b64,
+          nombreArchivo: `evidencia_inicial_${idx + 1}.jpg`,
+          fecha: nowIso
+        })),
+        comentarios: [{
+          id: Date.now(),
+          autor: currentUser.nombre,
+          rol: currentUser.rol,
+          texto: `⏱️ INGRESO TIMBRADO: Técnico ${currentUser.nombre} timbró su ingreso en tienda a las ${now.toLocaleTimeString()} e inició el caso para atención presencial.`,
+          fecha: nowIso
+        }],
+        historial: [{
+          id: Date.now(),
+          estadoNuevo: 'en_proceso',
+          usuario: currentUser.nombre,
+          fecha: nowIso,
+          detalle: `Timbrado de ingreso y creación de caso en tienda #${data.tiendaId}`
+        }]
+      };
+
+      setCases([newCase, ...cases]);
+
+      if (isSupabaseConfigured) {
+        supabase.from('casos').insert([{
+          id: newId,
+          tienda_id: data.tiendaId,
+          creado_por: currentUser.id,
+          categoria: data.newCaseData.categoria,
+          descripcion: data.newCaseData.descripcion,
+          prioridad_nivel: data.newCaseData.prioridad,
+          estado: 'en_proceso',
+          tecnico_asignado_id: currentUser.id,
+          fecha_creacion: nowIso,
+          fecha_limite_sla: limit,
+          es_caso_tecnico: true,
+          tecnico_estatus_trabajo: 'Trabajando en tienda',
+          tecnico_presencial_nombre: currentUser.nombre,
+          hora_entrada: nowIso
+        }]).then(({ error }: any) => {
+          if (error) console.error("Error al insertar caso técnico en Supabase:", error);
+        });
+      }
+
+      const punch: ActiveTechPunchClock = {
+        tecnicoId: currentUser.id,
+        tecnicoNombre: currentUser.nombre,
+        tiendaId: data.tiendaId,
+        casoId: newId,
+        horaIngreso: nowIso,
+        numeroVisita: 1,
+        esNuevoCaso: true
+      };
+      setActivePunchClock(punch);
+      try {
+        localStorage.setItem(`maint_tech_punch_${currentUser.id}`, JSON.stringify(punch));
+      } catch {}
+
+      pushNotification(
+        `⏱️ NUEVO CASO & TIMBRADO: ${currentUser.nombre} inició "${data.newCaseData.categoria}" en ${stores.find(s => s.id === data.tiendaId)?.nombre || `Tienda #${data.tiendaId}`}.`,
+        'nuevo_caso',
+        { tiendaId: data.tiendaId, casoId: newId }
+      );
+
+      setSelectedCaseId(newId);
+      return newId;
+    }
+  };
+
+  // Handler para Timbrar Salida de Tienda (Clock Out)
+  const handleTechClockOut = async (data: {
+    actionType: 'conclude' | 'pause' | 'exit_only';
+    solutionDesc?: string;
+    solutionPhotos?: string[];
+    pauseReason?: string;
+  }) => {
+    if (!activePunchClock || !currentUser) return;
+    const caseId = activePunchClock.casoId;
+
+    if (data.actionType === 'conclude') {
+      handleConcludeCaseDirect(caseId, data.solutionDesc || 'Trabajo técnico concluido conforme en tienda.', data.solutionPhotos || []);
+    } else if (data.actionType === 'pause') {
+      handlePauseCaseDirect(caseId, data.pauseReason || 'Pausa por materiales o repuestos.');
+    } else {
+      handleLogTechExit(caseId);
+    }
+
+    setActivePunchClock(null);
+    try {
+      localStorage.removeItem(`maint_tech_punch_${currentUser.id}`);
+    } catch {}
+
+    pushNotification(
+      `🛑 SALIDA TIMBRADA: ${currentUser.nombre} marcó su salida de la tienda (${data.actionType === 'conclude' ? 'Caso Concluido' : data.actionType === 'pause' ? 'Caso Pausado' : 'Fin de Visita'}).`,
+      'estado_cambio',
+      { casoId: caseId, tiendaId: activePunchClock.tiendaId }
     );
   };
 
@@ -2292,6 +3286,80 @@ export default function App() {
       `❌ MATERIAL DENEGADO: Tu pedido de materiales para el Caso #${target.casoId} fue DENEGADO por el supervisor.`,
       'estado_cambio',
       { casoId: target.casoId, usuario_id: target.tecnicoId } as any
+    );
+  };
+
+  const handleApprovePreMaterials = (caseId: number) => {
+    if (!currentUser) return;
+    setCases(prev => prev.map(c => {
+      if (c.id === caseId) {
+        return {
+          ...c,
+          material_anticipado_estado: 'aprobado',
+          material_anticipado_aprobado_por: currentUser.nombre
+        };
+      }
+      return c;
+    }));
+
+    if (isSupabaseConfigured) {
+      supabase.from('casos').update({
+        material_anticipado_estado: 'aprobado',
+        material_anticipado_aprobado_por: currentUser.nombre
+      }).eq('id', caseId).then(({ error }: any) => {
+        if (error) console.error("Error al aprobar materiales anticipados en Supabase:", error);
+      });
+
+      supabase.from('pedidos_materiales').update({
+        estado: 'aprobado'
+      }).eq('caso_id', caseId).then(({ error }: any) => {
+        if (error) console.error("Error al aprobar pedidos_materiales vinculados:", error);
+      });
+    }
+
+    setMaterialRequests(prev => prev.map(r => r.casoId === caseId ? { ...r, estado: 'aprobado' } : r));
+
+    pushNotification(
+      `✅ MATERIALES APROBADOS: La solicitud de materiales por adelantado para el Caso #${caseId} fue APROBADA por ${currentUser.nombre}.`,
+      'materiales',
+      { casoId: caseId }
+    );
+  };
+
+  const handleDenyPreMaterials = (caseId: number) => {
+    if (!currentUser) return;
+    setCases(prev => prev.map(c => {
+      if (c.id === caseId) {
+        return {
+          ...c,
+          material_anticipado_estado: 'rechazado',
+          material_anticipado_aprobado_por: currentUser.nombre
+        };
+      }
+      return c;
+    }));
+
+    if (isSupabaseConfigured) {
+      supabase.from('casos').update({
+        material_anticipado_estado: 'rechazado',
+        material_anticipado_aprobado_por: currentUser.nombre
+      }).eq('id', caseId).then(({ error }: any) => {
+        if (error) console.error("Error al denegar materiales anticipados en Supabase:", error);
+      });
+
+      supabase.from('pedidos_materiales').update({
+        estado: 'denegado'
+      }).eq('caso_id', caseId).then(({ error }: any) => {
+        if (error) console.error("Error al denegar pedidos_materiales vinculados:", error);
+      });
+    }
+
+    setMaterialRequests(prev => prev.map(r => r.casoId === caseId ? { ...r, estado: 'denegado' } : r));
+
+    pushNotification(
+      `❌ MATERIALES DENEGADOS: La solicitud de materiales para el Caso #${caseId} fue DENEGADA por ${currentUser.nombre}.`,
+      'materiales',
+      { casoId: caseId }
     );
   };
 
@@ -2506,17 +3574,20 @@ export default function App() {
   const [showReopenInput, setShowReopenInput] = useState(false);
   
   const handleReopenCase = (caseId: number) => {
-    if (!reopenReason.trim()) return;
+    if (!reopenReason.trim() || !currentUser) return;
 
-    if (!currentUser || (currentUser.rol !== 'jefe_tienda' && currentUser.rol !== 'subjefe')) {
-      alert('Únicamente los usuarios del local/tienda tienen autorización para reabrir casos.');
+    const isStoreUser = currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe';
+    const isSupervisorOrAdmin = currentUser.rol === 'supervisor' || currentUser.rol === 'administrador';
+
+    if (!isStoreUser && !isSupervisorOrAdmin) {
+      alert('Únicamente el personal de tienda, supervisores o administradores tienen autorización para reabrir casos.');
       return;
     }
 
     const targetCase = cases.find(c => c.id === caseId);
     if (!targetCase) return;
 
-    if (targetCase.tiendaId !== currentUser.tiendaId) {
+    if (isStoreUser && targetCase.tiendaId !== currentUser.tiendaId) {
       alert('Solo puedes reabrir casos pertenecientes a tu propia tienda.');
       return;
     }
@@ -2530,10 +3601,14 @@ export default function App() {
           ...c,
           estado: 'pendiente' as const,
           fechaCierre: undefined,
+          hora_entrada: undefined,
+          hora_salida: undefined,
+          pausado_por_material: false,
+          motivo_pausa_material: undefined,
           reaperturas_count: newCount,
           comentarios: [
             ...c.comentarios,
-            { id: Date.now(), autor: currentUser!.nombre, rol: currentUser!.rol, texto: `🔄 REABIERTO (${newCount}ª vez): ${reopenReason.trim()}`, fecha: now }
+            { id: Date.now(), autor: currentUser!.nombre, rol: currentUser!.rol, texto: `🔄 REAPERTURA DE CASO (${newCount}ª vez): "${reopenReason.trim()}". Requiere nueva atención técnica presencial.`, fecha: now }
           ],
           historial: [
             ...c.historial,
@@ -2548,6 +3623,9 @@ export default function App() {
       supabase.from('casos').update({
         estado: 'pendiente',
         fecha_cierre: null,
+        hora_entrada: null,
+        hora_salida: null,
+        pausado_por_material: false,
         reaperturas_count: newCount
       }).eq('id', caseId).then(({ error: errCase }: any) => {
         if (errCase) console.error("Error al reabrir caso en Supabase:", errCase);
@@ -2556,7 +3634,7 @@ export default function App() {
           caso_id: caseId,
           autor: currentUser!.nombre,
           rol: currentUser!.rol,
-          texto: `🔄 REABIERTO (${newCount}ª vez): ${reopenReason.trim()}`,
+          texto: `🔄 REAPERTURA DE CASO (${newCount}ª vez): "${reopenReason.trim()}". Requiere nueva atención técnica presencial.`,
           fecha: now
         }]).then(({ error: errCom }: any) => {
           if (errCom) console.error("Error al guardar comentario de reapertura en Supabase:", errCom);
@@ -2568,13 +3646,13 @@ export default function App() {
     
     if (newCount >= 3) {
       pushNotification(
-        `🚨 ALERTA CRÍTICA: Caso #${caseId} en ${stores.find(s => s.id === techCaseStoreId)?.nombre || `Tienda #${techCaseStoreId}`} reabierto por ${newCount}ª vez. SE REQUIERE BUSCAR OTRA ALTERNATIVA TÉCNICA URGENTE (el trabajo realizado no funcionó).`,
+        `🚨 ALERTA CRÍTICA: Caso #${caseId} en ${stores.find(s => s.id === targetCase.tiendaId)?.nombre || `Tienda #${targetCase.tiendaId}`} reabierto por ${newCount}ª vez. SE REQUIERE BUSCAR OTRA ALTERNATIVA TÉCNICA URGENTE (el trabajo realizado no funcionó).`,
         'estado_cambio',
         { tiendaId: storeId, casoId: caseId, estadoNuevo: 'pendiente', prioridad: 1 }
       );
     } else {
       pushNotification(
-        `🔄 Caso #${caseId} REABIERTO: "${reopenReason.substring(0, 30)}..."`,
+        `🔄 Caso #${caseId} en ${stores.find(s => s.id === targetCase.tiendaId)?.nombre || `Tienda #${targetCase.tiendaId}`} reabierto por ${currentUser.nombre} (${newCount}ª vez): "${reopenReason.trim()}".`,
         'estado_cambio',
         { tiendaId: storeId, casoId: caseId, estadoNuevo: 'pendiente' }
       );
@@ -2597,112 +3675,352 @@ export default function App() {
   const [admEmail, setAdmEmail] = useState('');
   const [admUsername, setAdmUsername] = useState('');
   const [admContrasena, setAdmContrasena] = useState('');
-  const [admRole, setAdmRole] = useState<'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico'>('jefe_tienda');
+  const [admRole, setAdmRole] = useState<'administrador' | 'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico'>('jefe_tienda');
   const [admTiendaNombre, setAdmTiendaNombre] = useState('');
+  const [admTiendaCiudad, setAdmTiendaCiudad] = useState('Quito');
+  const [admIsNewStoreMode, setAdmIsNewStoreMode] = useState(true);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
+  const [isSubmittingAdminUser, setIsSubmittingAdminUser] = useState(false);
 
-  const handleAdminUserSubmit = (e: React.FormEvent) => {
+  const handleAdminUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingAdminUser) return;
     if (!admName || !admUsername || !admEmail) return;
 
-    let targetTiendaId: number | undefined = undefined;
-    if ((admRole === 'jefe_tienda' || admRole === 'subjefe') && admTiendaNombre.trim() !== '') {
-      const matchedStore = stores.find(s => s.nombre.toLowerCase().trim() === admTiendaNombre.toLowerCase().trim());
-      if (matchedStore) {
-        targetTiendaId = matchedStore.id;
-      } else {
-        const newStoreId = stores.length > 0 ? Math.max(...stores.map(s => s.id)) + 1 : 1;
-        const newStoreObj: Store = {
-          id: newStoreId,
-          nombre: admTiendaNombre.trim(),
-          ciudad: 'Quito', // Default city
-          direccion: 'Dirección por registrar'
-        };
-        setStores([...stores, newStoreObj]);
-        targetTiendaId = newStoreId;
+    const trimmedName = admName.trim();
+    const trimmedUsername = admUsername.trim();
+    const trimmedEmail = admEmail.trim();
 
-        // Auto-crear tienda en Supabase
-        if (isSupabaseConfigured) {
-          supabase.from('tiendas').insert([{
-            id: newStoreId,
-            nombre: admTiendaNombre.trim(),
-            ciudad: 'Quito',
-            direccion: 'Dirección por registrar'
-          }]).then(({ error }: any) => {
-            if (error) console.error("Error al auto-crear tienda en Supabase:", error);
-          });
-        }
+    // 1. Validar unicidad en el estado local en memoria
+    if (editingUserId === null) {
+      if (users.some(u => u.usuario.toLowerCase().trim() === trimmedUsername.toLowerCase())) {
+        alert(`El nombre de usuario (login) "${trimmedUsername}" ya está en uso. Por favor ingresa uno diferente.`);
+        return;
+      }
+      if (users.some(u => u.correo.toLowerCase().trim() === trimmedEmail.toLowerCase())) {
+        alert(`El correo electrónico "${trimmedEmail}" ya está registrado con otro usuario.`);
+        return;
+      }
+    } else {
+      if (users.some(u => u.id !== editingUserId && u.usuario.toLowerCase().trim() === trimmedUsername.toLowerCase())) {
+        alert(`El nombre de usuario (login) "${trimmedUsername}" ya pertenece a otra cuenta.`);
+        return;
+      }
+      if (users.some(u => u.id !== editingUserId && u.correo.toLowerCase().trim() === trimmedEmail.toLowerCase())) {
+        alert(`El correo electrónico "${trimmedEmail}" ya pertenece a otra cuenta.`);
+        return;
       }
     }
 
-    if (editingUserId !== null) {
-      setUsers(users.map(u => u.id === editingUserId ? {
-        ...u,
-        nombre: admName,
-        correo: admEmail,
-        usuario: admUsername,
-        rol: admRole,
-        contrasena: admContrasena ? admContrasena.trim() : u.contrasena,
-        tiendaId: targetTiendaId
-      } : u));
+    setIsSubmittingAdminUser(true);
 
+    try {
+      // 2. Validar unicidad directamente en la base de datos Supabase para evitar errores 409 o violaciones de clave
       if (isSupabaseConfigured) {
+        try {
+          const { data: dbConflicts } = await supabase
+            .from('usuarios')
+            .select('id, usuario, correo')
+            .or(`usuario.ilike.${trimmedUsername},correo.ilike.${trimmedEmail}`);
+
+          if (dbConflicts && dbConflicts.length > 0) {
+            const conflict = dbConflicts.find(u => editingUserId === null || u.id !== editingUserId);
+            if (conflict) {
+              if (conflict.correo.toLowerCase().trim() === trimmedEmail.toLowerCase()) {
+                alert(`El correo electrónico "${trimmedEmail}" ya se encuentra registrado en el sistema. Por favor utiliza un correo diferente.`);
+                return;
+              }
+              if (conflict.usuario.toLowerCase().trim() === trimmedUsername.toLowerCase()) {
+                alert(`El nombre de usuario (login) "${trimmedUsername}" ya existe en el sistema. Por favor elige otro.`);
+                return;
+              }
+            }
+          }
+        } catch (chkErr) {
+          console.warn("Aviso en pre-chequeo de usuario en Supabase:", chkErr);
+        }
+      }
+
+      // 3. Resolución segura de la tienda o nuevo lugar de trabajo
+      let targetTiendaId: number | undefined = undefined;
+      if ((admRole === 'jefe_tienda' || admRole === 'subjefe') && admTiendaNombre.trim() !== '') {
+        const cleanStoreName = admTiendaNombre.trim();
+        const matchedStore = stores.find(s => s.nombre.toLowerCase().trim() === cleanStoreName.toLowerCase());
+
+        if (matchedStore && !admIsNewStoreMode) {
+          targetTiendaId = matchedStore.id;
+        } else {
+          // Si estamos en modo nuevo local o no se halló en memoria, verificar si ya existe en Supabase para no duplicarla
+          let existingDbStoreId: number | null = null;
+          if (isSupabaseConfigured) {
+            try {
+              const { data: existingStores } = await supabase
+                .from('tiendas')
+                .select('id, nombre')
+                .ilike('nombre', cleanStoreName)
+                .limit(1);
+
+              if (existingStores && existingStores.length > 0) {
+                existingDbStoreId = existingStores[0].id;
+              }
+            } catch (errStoreChk) {
+              console.warn("Aviso al verificar tienda en Supabase:", errStoreChk);
+            }
+          }
+
+          if (existingDbStoreId) {
+            targetTiendaId = existingDbStoreId;
+          } else {
+            const newStoreCity = admTiendaCiudad.trim() || 'Quito';
+            let newStoreId = stores.length > 0 ? Math.max(...stores.map(s => s.id)) + 1 : 1;
+
+            if (isSupabaseConfigured) {
+              try {
+                // Obtener el ID máximo de tiendas para evitar desincronización de secuencia
+                const { data: maxStoreRow } = await supabase
+                  .from('tiendas')
+                  .select('id')
+                  .order('id', { ascending: false })
+                  .limit(1);
+
+                const safeNextStoreId = Math.max(
+                  (maxStoreRow && maxStoreRow[0]?.id ? maxStoreRow[0].id : 0) + 1,
+                  newStoreId
+                );
+
+                const { data: createdDbStore, error: errStoreInsert } = await supabase
+                  .from('tiendas')
+                  .insert([{
+                    id: safeNextStoreId,
+                    nombre: cleanStoreName,
+                    ciudad: newStoreCity,
+                    direccion: 'Dirección por registrar'
+                  }])
+                  .select()
+                  .single();
+
+                if (createdDbStore && createdDbStore.id) {
+                  newStoreId = createdDbStore.id;
+                } else if (errStoreInsert) {
+                  // Reintento sin ID explícito por si la base genera su propia secuencia
+                  const { data: retryStore } = await supabase
+                    .from('tiendas')
+                    .insert([{
+                      nombre: cleanStoreName,
+                      ciudad: newStoreCity,
+                      direccion: 'Dirección por registrar'
+                    }])
+                    .select()
+                    .single();
+                  if (retryStore && retryStore.id) {
+                    newStoreId = retryStore.id;
+                  }
+                }
+              } catch (err) {
+                console.error("Error al auto-crear tienda/lugar de trabajo en Supabase:", err);
+              }
+            }
+
+            const newStoreObj: Store = {
+              id: newStoreId,
+              nombre: cleanStoreName,
+              ciudad: newStoreCity,
+              direccion: 'Dirección por registrar'
+            };
+            setStores(prev => prev.some(s => s.id === newStoreId) ? prev : [...prev, newStoreObj]);
+            targetTiendaId = newStoreId;
+          }
+        }
+      }
+
+      if (editingUserId !== null) {
+        // 4. ACTUALIZAR USUARIO EXISTENTE
         const updatePayload: any = {
-          nombre: admName,
-          correo: admEmail,
-          usuario: admUsername,
+          nombre: trimmedName,
+          correo: trimmedEmail,
+          usuario: trimmedUsername,
           rol: admRole,
           tienda_id: targetTiendaId
         };
-        if (admContrasena) {
+        if (admContrasena.trim()) {
           updatePayload.contrasena = admContrasena.trim();
+          updatePayload.password_cambiado = true;
         }
-        supabase.from('usuarios').update(updatePayload).eq('id', editingUserId).then(({ error }: any) => {
-          if (error) console.error("Error al actualizar usuario en Supabase:", error);
-        });
-      }
 
-      setEditingUserId(null);
-      alert('Usuario actualizado con éxito.');
-    } else {
-      const newUserId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
-      const finalPass = admContrasena.trim() || '123456';
-      const newU: User = {
-        id: newUserId,
-        nombre: admName,
-        correo: admEmail,
-        usuario: admUsername,
-        rol: admRole,
-        contrasena: finalPass,
-        estado: true,
-        tiendaId: targetTiendaId
-      };
-      setUsers([...users, newU]);
+        setUsers(prev => prev.map(u => u.id === editingUserId ? {
+          ...u,
+          nombre: trimmedName,
+          correo: trimmedEmail,
+          usuario: trimmedUsername,
+          rol: admRole,
+          contrasena: admContrasena ? admContrasena.trim() : u.contrasena,
+          tiendaId: targetTiendaId
+        } : u));
 
-      if (isSupabaseConfigured) {
-        supabase.from('usuarios').insert([{
-          id: newUserId,
-          nombre: admName,
-          correo: admEmail,
-          usuario: admUsername,
+        if (currentUser?.id === editingUserId) {
+          const updatedCurrent: User = {
+            ...currentUser,
+            nombre: trimmedName,
+            correo: trimmedEmail,
+            usuario: trimmedUsername,
+            rol: admRole,
+            tiendaId: targetTiendaId
+          };
+          setCurrentUser(updatedCurrent);
+          try { localStorage.setItem('maint_user', JSON.stringify(updatedCurrent)); } catch {}
+        }
+
+        if (isSupabaseConfigured) {
+          const { error } = await supabase.from('usuarios').update(updatePayload).eq('id', editingUserId);
+          if (error) {
+            console.error("Error al actualizar usuario en Supabase:", error);
+            alert("Aviso: Hubo un problema al sincronizar con el servidor: " + error.message);
+          } else if (admRole === 'tecnico') {
+            await supabase.from('disponibilidad_tecnicos').update({
+              tecnico_nombre: trimmedName
+            }).eq('usuario_id', editingUserId);
+          }
+        }
+
+        setEditingUserId(null);
+        setShowAdminUserForm(false);
+        alert('Usuario actualizado con éxito y sincronizado con todos los administradores.');
+      } else {
+        // 5. CREAR NUEVO USUARIO
+        const finalPass = admContrasena.trim() || '123456';
+        let realUserId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
+
+        if (isSupabaseConfigured) {
+          // Obtener el ID más alto en Supabase para evitar colisión de secuencia en "usuarios_pkey"
+          let safeNextUserId = realUserId;
+          try {
+            const { data: maxRow } = await supabase
+              .from('usuarios')
+              .select('id')
+              .order('id', { ascending: false })
+              .limit(1);
+
+            if (maxRow && maxRow[0]?.id) {
+              safeNextUserId = Math.max(maxRow[0].id + 1, realUserId);
+            }
+          } catch (eSeq) {
+            console.warn("No se pudo obtener max ID de usuarios:", eSeq);
+          }
+
+          const insertPayload: any = {
+            id: safeNextUserId,
+            nombre: trimmedName,
+            correo: trimmedEmail,
+            usuario: trimmedUsername,
+            rol: admRole,
+            contrasena: finalPass,
+            tienda_id: targetTiendaId,
+            estado: true,
+            password_cambiado: false
+          };
+
+          let { data: createdRow, error } = await supabase
+            .from('usuarios')
+            .insert([insertPayload])
+            .select()
+            .single();
+
+          // Si falla por colisión en la clave primaria usuarios_pkey, reintentar sin ID explícito
+          if (error && error.code === '23505' && (error.message?.includes('usuarios_pkey') || error.details?.includes('id'))) {
+            delete insertPayload.id;
+            const retry = await supabase
+              .from('usuarios')
+              .insert([insertPayload])
+              .select()
+              .single();
+            createdRow = retry.data;
+            error = retry.error;
+          }
+
+          if (error) {
+            console.error("Error al crear usuario en Supabase:", error);
+            if (error.code === '23505') {
+              if (error.message?.includes('usuarios_correo_key') || error.details?.includes('correo')) {
+                alert(`El correo "${trimmedEmail}" ya está registrado en el sistema. Por favor utiliza otro.`);
+              } else if (error.message?.includes('usuarios_usuario_key') || error.details?.includes('usuario')) {
+                alert(`El nombre de usuario "${trimmedUsername}" ya está en uso. Por favor elige otro.`);
+              } else {
+                alert(`Conflicto al guardar el usuario en el servidor: ${error.details || error.message}`);
+              }
+            } else {
+              alert("Error al guardar el usuario en el servidor: " + error.message);
+            }
+            return;
+          }
+
+          if (createdRow && createdRow.id) {
+            realUserId = createdRow.id;
+          }
+
+          // Si es TÉCNICO, vincularlo automáticamente en la tabla disponibilidad_tecnicos
+          if (admRole === 'tecnico') {
+            const techDbRecord = {
+              tecnico_nombre: trimmedName,
+              usuario_id: realUserId,
+              estatus: 'disponible'
+            };
+            await supabase.from('disponibilidad_tecnicos').insert([techDbRecord]);
+            const newTechObj: TechAvailability = {
+              id: Date.now(),
+              tecnicoNombre: trimmedName,
+              usuarioId: realUserId,
+              estatus: 'disponible'
+            };
+            setTechAvailability(prev => {
+              if (prev.some(t => t.usuarioId === realUserId || t.tecnicoNombre.toLowerCase().trim() === trimmedName.toLowerCase())) {
+                return prev;
+              }
+              return [...prev, newTechObj];
+            });
+          }
+
+          // Notificar en tiempo real a todos los administradores y supervisores
+          const roleLabel = (
+            admRole === 'tecnico' ? 'Técnico Operativo' :
+            admRole === 'supervisor' ? 'Supervisor' :
+            admRole === 'administrador' ? 'Administrador' : 'Tienda / Local'
+          );
+          await supabase.from('notificaciones').insert([{
+            caso_id: null,
+            mensaje: `👤 Nuevo ${roleLabel} registrado en el sistema: ${trimmedName} (@${trimmedUsername})`,
+            leido: false,
+            fecha: new Date().toISOString()
+          }]);
+        }
+
+        const newU: User = {
+          id: realUserId,
+          nombre: trimmedName,
+          correo: trimmedEmail,
+          usuario: trimmedUsername,
           rol: admRole,
           contrasena: finalPass,
-          tienda_id: targetTiendaId,
-          estado: true
-        }]).then(({ error }: any) => {
-          if (error) console.error("Error al crear usuario en Supabase:", error);
-        });
+          estado: true,
+          tiendaId: targetTiendaId,
+          passwordCambiado: false
+        };
+
+        setUsers(prev => prev.some(u => u.id === realUserId) ? prev : [...prev, newU]);
+        setShowAdminUserForm(false);
+        alert(`¡Usuario "${newU.nombre}" registrado y sincronizado exitosamente con todos los administradores y técnicos!`);
       }
 
-      alert('Usuario creado con éxito.');
+      setAdmName('');
+      setAdmEmail('');
+      setAdmUsername('');
+      setAdmContrasena('');
+      setAdmRole('jefe_tienda');
+      setAdmTiendaNombre('');
+      setAdmTiendaCiudad('Quito');
+      setAdmIsNewStoreMode(true);
+    } finally {
+      setIsSubmittingAdminUser(false);
     }
-
-    setAdmName('');
-    setAdmEmail('');
-    setAdmUsername('');
-    setAdmContrasena('');
-    setAdmRole('jefe_tienda');
-    setAdmTiendaNombre('');
   };
 
   const handleStartEditUser = (u: User) => {
@@ -2715,9 +4033,13 @@ export default function App() {
     if (u.tiendaId) {
       const storeObj = stores.find(s => s.id === u.tiendaId);
       setAdmTiendaNombre(storeObj ? storeObj.nombre : '');
+      setAdmTiendaCiudad(storeObj ? storeObj.ciudad : 'Quito');
     } else {
       setAdmTiendaNombre('');
+      setAdmTiendaCiudad('Quito');
     }
+    setAdmIsNewStoreMode(false);
+    setShowAdminUserForm(true);
   };
 
   const handleCancelEditUser = () => {
@@ -2728,25 +4050,39 @@ export default function App() {
     setAdmContrasena('');
     setAdmRole('jefe_tienda');
     setAdmTiendaNombre('');
+    setAdmTiendaCiudad('Quito');
+    setAdmIsNewStoreMode(true);
+    setShowAdminUserForm(false);
   };
 
-  const handleAdminDeleteUser = (id: number) => {
+  const handleAdminDeleteUser = async (id: number) => {
     if (id === currentUser?.id) {
       alert('No puedes eliminar tu propio usuario.');
       return;
     }
-    if (confirm('¿Estás seguro de eliminar este usuario?')) {
-      setUsers(users.filter(u => u.id !== id));
+    const targetUser = users.find(u => u.id === id);
+    if (!targetUser) return;
+
+    if (confirm(`¿Estás seguro de eliminar el usuario "${targetUser.nombre}" (@${targetUser.usuario})?`)) {
+      setUsers(prev => prev.filter(u => u.id !== id));
+      if (targetUser.rol === 'tecnico') {
+        setTechAvailability(prev => prev.filter(t => t.usuarioId !== id && t.tecnicoNombre.toLowerCase().trim() !== targetUser.nombre.toLowerCase().trim()));
+      }
 
       if (isSupabaseConfigured) {
-        supabase.from('usuarios').delete().eq('id', id).then(({ error }: any) => {
-          if (error) console.error("Error al eliminar usuario en Supabase:", error);
-        });
+        if (targetUser.rol === 'tecnico') {
+          supabase.from('disponibilidad_tecnicos').delete().eq('usuario_id', id).then(() => {});
+        }
+        const { error } = await supabase.from('usuarios').delete().eq('id', id);
+        if (error) {
+          console.error("Error al eliminar usuario en Supabase:", error);
+          alert("Error al eliminar en Supabase: " + error.message);
+        }
       }
     }
   };
 
-  const handleAdminToggleUser = (id: number) => {
+  const handleAdminToggleUser = async (id: number) => {
     if (id === currentUser?.id) {
       alert('No puedes desactivar tu propio usuario.');
       return;
@@ -2754,14 +4090,26 @@ export default function App() {
     const targetUser = users.find(u => u.id === id);
     if (!targetUser) return;
 
-    setUsers(users.map(u => u.id === id ? { ...u, estado: !u.estado } : u));
+    const nextState = !targetUser.estado;
+    setUsers(prev => prev.map(u => u.id === id ? { ...u, estado: nextState } : u));
+
+    if (targetUser.rol === 'tecnico') {
+      const nextEstatus: 'disponible' | 'libre' = nextState ? 'disponible' : 'libre';
+      setTechAvailability(prev => prev.map(t => (t.usuarioId === id || t.tecnicoNombre.toLowerCase().trim() === targetUser.nombre.toLowerCase().trim()) ? { ...t, estatus: nextEstatus } : t));
+    }
 
     if (isSupabaseConfigured) {
-      supabase.from('usuarios').update({
-        estado: !targetUser.estado
-      }).eq('id', id).then(({ error }: any) => {
-        if (error) console.error("Error al cambiar estado en Supabase:", error);
-      });
+      if (targetUser.rol === 'tecnico') {
+        const nextEstatus: 'disponible' | 'libre' = nextState ? 'disponible' : 'libre';
+        supabase.from('disponibilidad_tecnicos').update({
+          estatus: nextEstatus
+        }).eq('usuario_id', id).then(() => {});
+      }
+      const { error } = await supabase.from('usuarios').update({ estado: nextState }).eq('id', id);
+      if (error) {
+        console.error("Error al cambiar estado en Supabase:", error);
+        alert("Error al cambiar estado en el servidor: " + error.message);
+      }
     }
   };
 
@@ -2771,52 +4119,71 @@ export default function App() {
   const [newStoreDir, setNewStoreDir] = useState('');
   const [editingStoreId, setEditingStoreId] = useState<number | null>(null);
 
-  const handleAdminStoreSubmit = (e: React.FormEvent) => {
+  const handleAdminStoreSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStoreName || !newStoreCity || !newStoreDir) return;
 
+    const trimmedStoreName = newStoreName.trim();
+    const trimmedCity = newStoreCity.trim();
+    const trimmedDir = newStoreDir.trim();
+
     if (editingStoreId !== null) {
-      setStores(stores.map(s => s.id === editingStoreId ? {
+      setStores(prev => prev.map(s => s.id === editingStoreId ? {
         ...s,
-        nombre: newStoreName,
-        ciudad: newStoreCity,
-        direccion: newStoreDir
+        nombre: trimmedStoreName,
+        ciudad: trimmedCity,
+        direccion: trimmedDir
       } : s));
 
       if (isSupabaseConfigured) {
-        supabase.from('tiendas').update({
-          nombre: newStoreName,
-          ciudad: newStoreCity,
-          direccion: newStoreDir
-        }).eq('id', editingStoreId).then(({ error }: any) => {
-          if (error) console.error("Error al actualizar tienda en Supabase:", error);
-        });
+        await supabase.from('tiendas').update({
+          nombre: trimmedStoreName,
+          ciudad: trimmedCity,
+          direccion: trimmedDir
+        }).eq('id', editingStoreId);
       }
 
       setEditingStoreId(null);
-      alert('Tienda actualizada con éxito.');
+      setShowAdminStoreForm(false);
+      alert('Tienda actualizada con éxito y sincronizada.');
     } else {
-      const nextStoreId = stores.length > 0 ? Math.max(...stores.map(s => s.id)) + 1 : 1;
-      const newS: Store = {
-        id: nextStoreId,
-        nombre: newStoreName,
-        ciudad: newStoreCity,
-        direccion: newStoreDir
-      };
-      setStores([...stores, newS]);
+      let realStoreId = stores.length > 0 ? Math.max(...stores.map(s => s.id)) + 1 : 1;
 
       if (isSupabaseConfigured) {
-        supabase.from('tiendas').insert([{
-          id: nextStoreId,
-          nombre: newStoreName,
-          ciudad: newStoreCity,
-          direccion: newStoreDir
-        }]).then(({ error }: any) => {
-          if (error) console.error("Error al guardar tienda en Supabase:", error);
-        });
+        const { data: createdStore, error } = await supabase.from('tiendas').insert([{
+          nombre: trimmedStoreName,
+          ciudad: trimmedCity,
+          direccion: trimmedDir
+        }]).select().single();
+
+        if (error) {
+          console.error("Error al guardar tienda en Supabase:", error);
+          alert("Error al crear tienda en Supabase: " + error.message);
+          return;
+        }
+
+        if (createdStore && createdStore.id) {
+          realStoreId = createdStore.id;
+        }
+
+        await supabase.from('notificaciones').insert([{
+          caso_id: null,
+          mensaje: `🏬 Nueva tienda agregada a la red nacional: ${trimmedStoreName} (${trimmedCity})`,
+          leido: false,
+          fecha: new Date().toISOString()
+        }]);
       }
 
-      alert('Tienda creada con éxito.');
+      const newS: Store = {
+        id: realStoreId,
+        nombre: trimmedStoreName,
+        ciudad: trimmedCity,
+        direccion: trimmedDir
+      };
+      setStores(prev => prev.some(s => s.id === realStoreId) ? prev : [...prev, newS]);
+
+      setShowAdminStoreForm(false);
+      alert('Tienda creada y sincronizada con éxito.');
     }
 
     setNewStoreName('');
@@ -2829,6 +4196,7 @@ export default function App() {
     setNewStoreName(s.nombre);
     setNewStoreCity(s.ciudad);
     setNewStoreDir(s.direccion);
+    setShowAdminStoreForm(true);
   };
 
   const handleCancelEditStore = () => {
@@ -2836,6 +4204,7 @@ export default function App() {
     setNewStoreName('');
     setNewStoreCity('');
     setNewStoreDir('');
+    setShowAdminStoreForm(false);
   };
 
   const handleAdminDeleteStore = (id: number) => {
@@ -2973,117 +4342,304 @@ export default function App() {
           
           {/* Left panel: Logo, Slogan, and stats */}
           <div className="auth-left">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
+              <div className="vyron-badge" style={{ width: '44px', height: '44px', borderRadius: '12px', background: 'rgba(108, 76, 224, 0.18)', border: '1px solid rgba(108, 76, 224, 0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg viewBox="0 0 120 120" style={{ width: '32px', height: '32px' }} xmlns="http://www.w3.org/2000/svg">
+                  <polygon points="60,8 105,32 105,88 60,112 15,88 15,32" fill="none" stroke="#6C4CE0" strokeWidth="4.5"/>
+                  <circle cx="60" cy="8" r="5" fill="#19C48A"/>
+                  <circle cx="105" cy="32" r="5" fill="#19C48A"/>
+                  <circle cx="105" cy="88" r="5" fill="#19C48A"/>
+                  <circle cx="60" cy="112" r="5" fill="#19C48A"/>
+                  <circle cx="15" cy="88" r="5" fill="#19C48A"/>
+                  <circle cx="15" cy="32" r="5" fill="#19C48A"/>
+                  <text x="60" y="69" textAnchor="middle" dominantBaseline="middle" fontFamily="'Outfit', system-ui, sans-serif" fontSize="28" fontWeight="800" fill="#6C4CE0">D&amp;N</text>
+                </svg>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span className="vyron-word" style={{ fontSize: '1.4rem', color: '#ffffff', letterSpacing: '-0.01em', fontWeight: 700 }}>
+                  D&amp;Nax <span style={{ color: '#19C48A' }}>Studios</span>
+                </span>
+                <span className="vyron-tag" style={{ color: '#19C48A', fontSize: '9px', letterSpacing: '0.22em' }}>OFFICIAL ENTERPRISE</span>
+              </div>
+            </div>
             <div className="auth-subtitle-portal">
-              Portal de Soporte
+              Portal Enterprise
             </div>
             <h1 className="auth-title-large">
-              Gestión de Mantenimientos
-              <span> y Soporte</span>
+              Mante<span>Tiendas</span>
             </h1>
+            <p style={{ color: 'rgba(255,255,255,0.75)', fontSize: '0.9rem', maxWidth: '340px', lineHeight: 1.5, marginTop: '8px' }}>
+              Sistema centralizado de gestión, seguimiento operativo y control de mantenimientos.
+            </p>
           </div>
 
           {/* Right panel: Login form */}
           <div className="auth-right">
             <div className="auth-card">
-              <div className="auth-header">
-                <span style={{ fontSize: '0.75rem', letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--primary)', fontWeight: 700 }}>- Acceso Seguro</span>
-                <h2 style={{ fontSize: '1.8rem', fontWeight: 800, margin: '8px 0 4px 0', textTransform: 'uppercase', fontFamily: 'Outfit, sans-serif' }}>Bienvenido de vuelta</h2>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: 0 }}>Ingresa tus credenciales para acceder al sistema.</p>
-              </div>
+              {savedBiometricUser && !showManualLoginForm ? (
+                /* ========================================================
+                   PANTALLA DEDICADA DE DESBLOQUEO BIOMÉTRICO (1-TOUCH)
+                   ======================================================== */
+                <div>
+                  <div className="auth-header" style={{ textAlign: 'center', marginBottom: '22px' }}>
+                    <div style={{
+                      width: '76px',
+                      height: '76px',
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, #6C4CE0 0%, #19C48A 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      margin: '0 auto 14px auto',
+                      fontSize: '2.3rem',
+                      color: '#fff',
+                      boxShadow: '0 8px 24px rgba(108, 76, 224, 0.35)'
+                    }}>
+                      {biometricType.includes('Face') ? '👤' : '👆'}
+                    </div>
+                    <span style={{ fontSize: '0.72rem', letterSpacing: '1.2px', textTransform: 'uppercase', color: 'var(--primary)', fontWeight: 800 }}>
+                      • Acceso Biométrico Protegido
+                    </span>
+                    <h2 style={{ fontSize: '1.65rem', fontWeight: 800, margin: '8px 0 4px 0', fontFamily: 'Outfit, sans-serif' }}>
+                      ¡Hola, {savedBiometricUser.nombre.split(' ')[0]}!
+                    </h2>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'rgba(108, 76, 224, 0.1)', color: '#6C4CE0', padding: '3px 10px', borderRadius: '12px', fontSize: '0.74rem', fontWeight: 700, margin: '4px 0 8px 0' }}>
+                      <span>{getUserBadgeText(savedBiometricUser)}</span>
+                      <span>• @{savedBiometricUser.usuario}</span>
+                    </div>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: '4px 0 0 0' }}>
+                      Usa tu {biometricType} para desbloquear e ingresar a tu cuenta.
+                    </p>
+                  </div>
 
-              <form onSubmit={handleLoginSubmit} autoComplete="on">
-                <div className="underline-input-group">
-                  <label className="underline-label" htmlFor="username">Usuario</label>
-                  <input 
-                    id="username"
-                    name="username"
-                    type="text" 
-                    autoComplete="username"
-                    className="underline-input" 
-                    placeholder="ej. BAT1_2026" 
-                    value={loginUser}
-                    onChange={e => setLoginUser(e.target.value)}
-                    required
-                  />
-                </div>
+                  {loginError && (
+                    <div style={{ color: 'var(--color-critical)', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', padding: '10px 12px', fontSize: '0.82rem', margin: '12px 0 16px 0', textAlign: 'center' }}>
+                      ⚠️ {loginError}
+                    </div>
+                  )}
 
-                <div className="underline-input-group" style={{ marginTop: '12px' }}>
-                  <label className="underline-label" htmlFor="pass">Contraseña</label>
-                  <div style={{ position: 'relative', width: '100%' }}>
-                    <input 
-                      id="pass"
-                      name="password"
-                      type={showLoginPassword ? "text" : "password"} 
-                      autoComplete="current-password"
-                      className="underline-input" 
-                      placeholder="••••••••" 
-                      value={loginPass}
-                      onChange={e => setLoginPass(e.target.value)}
-                      required
-                      style={{ paddingRight: '42px' }}
-                    />
-                    <button 
-                      type="button" 
-                      onClick={() => setShowLoginPassword(!showLoginPassword)}
-                      title={showLoginPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
-                      aria-label={showLoginPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                  <button
+                    type="button"
+                    onClick={handleBiometricLogin}
+                    disabled={isBiometricAuthenticating}
+                    className="btn-biometric-auth"
+                    style={{
+                      width: '100%',
+                      padding: '16px',
+                      borderRadius: '12px',
+                      background: 'linear-gradient(135deg, #6C4CE0 0%, #5B3BBF 100%)',
+                      border: 'none',
+                      color: '#ffffff',
+                      fontWeight: 800,
+                      fontSize: '0.98rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '10px',
+                      cursor: 'pointer',
+                      boxShadow: '0 8px 24px rgba(108, 76, 224, 0.4)',
+                      transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+                      marginBottom: '16px'
+                    }}
+                  >
+                    <span style={{ fontSize: '1.4rem' }}>
+                      {biometricType.includes('Face') ? '👤' : '👆'}
+                    </span>
+                    <span>
+                      {isBiometricAuthenticating ? 'Comprobando datos biométricos...' : `Desbloquear con ${biometricType}`}
+                    </span>
+                  </button>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLoginError('');
+                        setShowManualLoginForm(true);
+                      }}
                       style={{
-                        position: 'absolute',
-                        right: '10px',
-                        top: '50%',
-                        transform: 'translateY(-50%)',
-                        background: 'none',
-                        border: 'none',
+                        width: '100%',
+                        padding: '11px',
+                        borderRadius: '8px',
+                        background: 'transparent',
+                        border: '1px solid var(--border-color)',
+                        color: 'var(--text-main)',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
                         cursor: 'pointer',
-                        color: 'var(--text-muted)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        padding: '4px',
-                        borderRadius: '4px',
-                        transition: 'color 0.2s ease'
+                        gap: '6px'
                       }}
-                      onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--primary)')}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
                     >
-                      {showLoginPassword ? (
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                          <line x1="1" y1="1" x2="23" y2="23"></line>
-                        </svg>
-                      ) : (
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                          <circle cx="12" cy="12" r="3"></circle>
-                        </svg>
-                      )}
+                      <span>🔑 Ingresar con contraseña manual</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        localStorage.removeItem('maint_biometric_user');
+                        localStorage.removeItem('maint_saved_user');
+                        localStorage.removeItem('maint_saved_pass');
+                        setSavedBiometricUser(null);
+                        setLoginUser('');
+                        setLoginPass('');
+                        setLoginError('');
+                        setShowManualLoginForm(true);
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: '6px',
+                        color: 'var(--text-muted)',
+                        fontSize: '0.74rem',
+                        cursor: 'pointer',
+                        textDecoration: 'underline'
+                      }}
+                    >
+                      Iniciar con otra cuenta de usuario
                     </button>
                   </div>
                 </div>
+              ) : (
+                /* ========================================================
+                   FORMULARIO MANUAL (USUARIO Y CONTRASEÑA)
+                   ======================================================== */
+                <div>
+                  {savedBiometricUser && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLoginError('');
+                        setShowManualLoginForm(false);
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--primary)',
+                        fontSize: '0.78rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        marginBottom: '10px',
+                        padding: 0
+                      }}
+                    >
+                      ← Volver a desbloqueo con {biometricType}
+                    </button>
+                  )}
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '14px' }}>
-                  <input 
-                    type="checkbox"
-                    id="remember"
-                    checked={rememberMe}
-                    onChange={e => setRememberMe(e.target.checked)}
-                    style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--primary)' }}
-                  />
-                  <label htmlFor="remember" style={{ fontSize: '0.8rem', color: 'var(--text-main)', cursor: 'pointer', fontWeight: 600 }}>
-                    💾 Recordar credenciales en este dispositivo
-                  </label>
-                </div>
-
-                {loginError && (
-                  <div style={{ color: 'var(--color-critical)', fontSize: '0.85rem', margin: '10px 0 15px 0' }}>
-                    ⚠️ {loginError}
+                  <div className="auth-header">
+                    <span style={{ fontSize: '0.75rem', letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--primary)', fontWeight: 700 }}>- Acceso Seguro</span>
+                    <h2 style={{ fontSize: '1.8rem', fontWeight: 800, margin: '8px 0 4px 0', textTransform: 'uppercase', fontFamily: 'Outfit, sans-serif' }}>Bienvenido de vuelta</h2>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: 0 }}>Ingresa tus credenciales para acceder al sistema.</p>
                   </div>
-                )}
 
-                <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '16px', padding: '12px', fontSize: '0.9rem', fontWeight: 700 }}>
-                  ENTRAR →
-                </button>
-              </form>
+                  <form onSubmit={handleLoginSubmit} autoComplete="on">
+                    <div className="underline-input-group">
+                      <label className="underline-label" htmlFor="username">Usuario</label>
+                      <input 
+                        id="username"
+                        name="username"
+                        type="text" 
+                        autoComplete="username"
+                        className="underline-input" 
+                        placeholder="ej. BAT1_2026" 
+                        value={loginUser}
+                        onChange={e => setLoginUser(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    <div className="underline-input-group" style={{ marginTop: '12px' }}>
+                      <label className="underline-label" htmlFor="pass">Contraseña</label>
+                      <div style={{ position: 'relative', width: '100%' }}>
+                        <input 
+                          id="pass"
+                          name="password"
+                          type={showLoginPassword ? "text" : "password"} 
+                          autoComplete="current-password"
+                          className="underline-input" 
+                          placeholder="••••••••" 
+                          value={loginPass}
+                          onChange={e => setLoginPass(e.target.value)}
+                          required
+                          style={{ paddingRight: '42px' }}
+                        />
+                        <button 
+                          type="button" 
+                          onClick={() => setShowLoginPassword(!showLoginPassword)}
+                          title={showLoginPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                          aria-label={showLoginPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                          style={{
+                            position: 'absolute',
+                            right: '10px',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: 'var(--text-muted)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '4px',
+                            borderRadius: '4px',
+                            transition: 'color 0.2s ease'
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--primary)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                        >
+                          {showLoginPassword ? (
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                              <line x1="1" y1="1" x2="23" y2="23"></line>
+                            </svg>
+                          ) : (
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                              <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '14px' }}>
+                      <input 
+                        type="checkbox"
+                        id="remember"
+                        checked={rememberMe}
+                        onChange={e => setRememberMe(e.target.checked)}
+                        style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--primary)' }}
+                      />
+                      <label htmlFor="remember" style={{ fontSize: '0.8rem', color: 'var(--text-main)', cursor: 'pointer', fontWeight: 600 }}>
+                        💾 Recordar credenciales en este dispositivo
+                      </label>
+                    </div>
+
+                    {loginError && (
+                      <div style={{ color: 'var(--color-critical)', fontSize: '0.85rem', margin: '10px 0 15px 0' }}>
+                        ⚠️ {loginError}
+                      </div>
+                    )}
+
+                    <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '16px', padding: '12px', fontSize: '0.9rem', fontWeight: 700 }}>
+                      ENTRAR →
+                    </button>
+
+                    {(isBiometricAvailable || !!localStorage.getItem('maint_biometric_user')) && !savedBiometricUser && (
+                      <div style={{ marginTop: '14px', padding: '9px 12px', borderRadius: '8px', background: 'rgba(108, 76, 224, 0.08)', border: '1px dashed #6C4CE0', fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '1.2rem' }}>👆</span>
+                        <span>Dispositivo compatible con {biometricType}. Al ingresar con tu usuario quedará vinculado para accesos con un solo toque.</span>
+                      </div>
+                    )}
+                  </form>
+                </div>
+              )}
 
               <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                 <span>🔒 Conexión segura y cifrada</span>
@@ -3118,6 +4674,36 @@ export default function App() {
             </div>
 
             <div className="header-user-section">
+              {/* Technician Timbrador Status Pill */}
+              {currentUser.rol === 'tecnico' && (
+                <button
+                  type="button"
+                  onClick={() => setShowTechTimbradorModal(true)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '5px 12px',
+                    borderRadius: '999px',
+                    fontSize: '0.78rem',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    border: activePunchClock ? '1.5px solid #10B981' : '1.5px solid #EF4444',
+                    background: activePunchClock ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                    color: activePunchClock ? '#059669' : '#DC2626',
+                    transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+                  }}
+                  title={activePunchClock ? "Sesión técnica activa. Clic para ver o marcar salida" : "Obligatorio: Clic para registrar tu ingreso a tienda"}
+                >
+                  <span style={{ fontSize: '0.9rem' }}>⏱️</span>
+                  {activePunchClock ? (
+                    <span>En Turno: {stores.find(s => s.id === activePunchClock.tiendaId)?.nombre?.split(' ')[0] || 'Tienda'}</span>
+                  ) : (
+                    <span>⚠️ Timbrar Ingreso</span>
+                  )}
+                </button>
+              )}
+
               {/* Theme Toggle Button */}
               <button 
                 type="button"
@@ -3189,57 +4775,57 @@ export default function App() {
               </div>
 
               {/* Navigation Group 1: Casos */}
-              <div className="sidebar-section-header">📊 Estado de Casos</div>
+              <div className="sidebar-section-header">📊 Flujo de Mantenimiento</div>
               <ul className="sidebar-menu">
                 <li>
                   <div
-                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && statusFilter === 'todos' ? 'active' : ''}`}
-                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('todos'); setIsMobileSidebarOpen(false); }}
+                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && casesViewMode === 'pendientes' && statusFilter === 'todos' ? 'active' : ''}`}
+                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setCasesViewMode('pendientes'); setStatusFilter('todos'); setIsMobileSidebarOpen(false); }}
                   >
-                    <span>📄 Todos los Casos</span>
-                    <span className="sidebar-count-pill">{userVisibleCases.length}</span>
+                    <span>⚡ Todos los Casos Activos</span>
+                    <span className="sidebar-count-pill" style={{ background: 'var(--primary)', color: '#ffffff' }}>{activeCases.length}</span>
                   </div>
                 </li>
 
                 <li>
                   <div
-                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && statusFilter === 'pendiente' ? 'active' : ''}`}
-                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('pendiente'); setIsMobileSidebarOpen(false); }}
+                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && casesViewMode === 'pendientes' && statusFilter === 'pendiente' ? 'active' : ''}`}
+                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setCasesViewMode('pendientes'); setStatusFilter('pendiente'); setIsMobileSidebarOpen(false); }}
                   >
                     <span>⏳ Pendientes</span>
-                    <span className="sidebar-count-pill">{userVisibleCases.filter(c => c.estado === 'pendiente').length}</span>
+                    <span className="sidebar-count-pill">{pendingUnassigned.length}</span>
                   </div>
                 </li>
 
                 <li>
                   <div
-                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && statusFilter === 'en_proceso' ? 'active' : ''}`}
-                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('en_proceso'); setIsMobileSidebarOpen(false); }}
+                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && casesViewMode === 'pendientes' && statusFilter === 'en_proceso' ? 'active' : ''}`}
+                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setCasesViewMode('pendientes'); setStatusFilter('en_proceso'); setIsMobileSidebarOpen(false); }}
                   >
-                    <span>⚡ En Proceso</span>
-                    <span className="sidebar-count-pill">{userVisibleCases.filter(c => c.estado === 'en_proceso' && !c.pausado_por_material).length}</span>
+                    <span>🔧 En Proceso</span>
+                    <span className="sidebar-count-pill">{inProgressCases.length}</span>
                   </div>
                 </li>
 
                 <li>
                   <div
-                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && statusFilter === 'pausado_material' ? 'active' : ''}`}
-                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('pausado_material' as any); setIsMobileSidebarOpen(false); }}
+                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && casesViewMode === 'pendientes' && statusFilter === 'pausado_material' ? 'active' : ''}`}
+                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setCasesViewMode('pendientes'); setStatusFilter('pausado_material' as any); setIsMobileSidebarOpen(false); }}
                   >
                     <span>⏸️ Casos Pausados</span>
                     <span className="sidebar-count-pill" style={{ background: 'rgba(234, 179, 8, 0.2)', color: '#D97706' }}>
-                      {userVisibleCases.filter(c => Boolean(c.pausado_por_material) && c.estado !== 'concluido' && c.estado !== 'cerrado').length}
+                      {pausedCases.length}
                     </span>
                   </div>
                 </li>
 
                 <li>
                   <div
-                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && statusFilter === 'completado' ? 'active' : ''}`}
-                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setStatusFilter('completado'); setIsMobileSidebarOpen(false); }}
+                    className={`sidebar-subitem ${activeTab === 'dashboard' && !selectedCaseId && (casesViewMode === 'concluidos' || statusFilter === 'completado') ? 'active' : ''}`}
+                    onClick={() => { setSelectedCaseId(null); setActiveTab('dashboard'); setCasesViewMode('concluidos'); setStatusFilter('completado'); setIsMobileSidebarOpen(false); }}
                   >
-                    <span>✅ Completados</span>
-                    <span className="sidebar-count-pill">{userVisibleCases.filter(c => c.estado === 'concluido' || c.estado === 'cerrado').length}</span>
+                    <span>✅ Trabajos Concluidos / Historial</span>
+                    <span className="sidebar-count-pill">{concludedCases.length}</span>
                   </div>
                 </li>
               </ul>
@@ -3247,6 +4833,30 @@ export default function App() {
               {/* Navigation Group 2: Módulos */}
               <div className="sidebar-section-header" style={{ marginTop: '14px' }}>⚙️ Módulos</div>
               <ul className="sidebar-menu">
+                {currentUser.rol === 'tecnico' && (
+                  <li>
+                    <div
+                      className={`sidebar-subitem ${showTechTimbradorModal ? 'active' : ''}`}
+                      onClick={() => { setShowTechTimbradorModal(true); setIsMobileSidebarOpen(false); }}
+                      style={{ cursor: 'pointer', borderLeft: activePunchClock ? '3px solid #10B981' : '3px solid #EF4444' }}
+                    >
+                      <span>⏱️ Timbrador de Asistencia</span>
+                      <span 
+                        className="sidebar-count-pill" 
+                        style={{ 
+                          background: activePunchClock ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)', 
+                          color: activePunchClock ? '#059669' : '#DC2626',
+                          fontWeight: 800,
+                          fontSize: '0.68rem',
+                          padding: '2px 8px'
+                        }}
+                      >
+                        {activePunchClock ? 'ACTIVO' : 'PENDIENTE'}
+                      </span>
+                    </div>
+                  </li>
+                )}
+
                 {(currentUser.rol === 'tecnico' || currentUser.rol === 'supervisor' || currentUser.rol === 'administrador' || currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && (
                   <li>
                     <div
@@ -3359,8 +4969,25 @@ export default function App() {
                   🚪 Cerrar Sesión
                 </button>
 
-                <div style={{ textAlign: 'center', fontSize: '0.65rem', color: 'var(--text-subtle)', marginTop: '8px', padding: '4px 0', borderTop: '1px solid var(--border-color)', lineHeight: 1.3 }}>
-                  <strong>"Daniel Luna"</strong><br />Software, Web &amp; App Designer | &copy; 2026
+                <div style={{ textAlign: 'center', fontSize: '0.68rem', color: 'var(--text-subtle)', marginTop: '8px', padding: '8px 0 2px 0', borderTop: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', userSelect: 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <svg viewBox="0 0 120 120" style={{ width: '20px', height: '20px', flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
+                      <polygon points="60,8 105,32 105,88 60,112 15,88 15,32" fill="none" stroke="#6C4CE0" strokeWidth="4.5"/>
+                      <circle cx="60" cy="8" r="5" fill="#19C48A"/>
+                      <circle cx="105" cy="32" r="5" fill="#19C48A"/>
+                      <circle cx="105" cy="88" r="5" fill="#19C48A"/>
+                      <circle cx="60" cy="112" r="5" fill="#19C48A"/>
+                      <circle cx="15" cy="88" r="5" fill="#19C48A"/>
+                      <circle cx="15" cy="32" r="5" fill="#19C48A"/>
+                      <text x="60" y="69" textAnchor="middle" dominantBaseline="middle" fontFamily="'Outfit', system-ui, sans-serif" fontSize="28" fontWeight="800" fill="#6C4CE0">D&amp;N</text>
+                    </svg>
+                    <span style={{ fontWeight: 700, fontSize: '0.86rem', color: 'var(--text-main)', letterSpacing: '-0.01em' }}>
+                      D&amp;Nax <span style={{ color: '#19C48A' }}>Studios</span>
+                    </span>
+                  </div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>
+                    Diseñado y Desarrollado por <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>D&amp;Nax Studios</span> &bull; &copy; 2026
+                  </div>
                 </div>
               </div>
             </aside>
@@ -3392,9 +5019,33 @@ export default function App() {
                   {/* Main Header Card */}
                   <div className="case-header-card">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                      <span className="badge" style={{ background: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--border-color)', fontSize: '0.74rem' }}>
-                        CASO #{getCaseDisplayCode(selectedCase)}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span className="badge" style={{ background: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--border-color)', fontSize: '0.74rem' }}>
+                          CASO #{getCaseDisplayCode(selectedCase)}
+                        </span>
+                        {canEditOrDeleteCase(selectedCase) && (
+                          <div style={{ display: 'inline-flex', gap: '6px' }}>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              style={{ padding: '3px 9px', fontSize: '0.74rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                              onClick={() => handleOpenEditCase(selectedCase)}
+                              title="Editar este caso"
+                            >
+                              ✏️ Editar
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-danger btn-sm"
+                              style={{ padding: '3px 9px', fontSize: '0.74rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', borderColor: '#fca5a5' }}
+                              onClick={() => handleOpenDeleteCase(selectedCase)}
+                              title="Eliminar este caso"
+                            >
+                              🗑️ Eliminar
+                            </button>
+                          </div>
+                        )}
+                      </div>
 
                       <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                         {!selectedCase.es_caso_tecnico && (
@@ -3454,7 +5105,7 @@ export default function App() {
                       )}
                     </button>
 
-                    {selectedCase.estado === 'en_proceso' && (
+                    {(selectedCase.estado === 'en_proceso' || selectedCase.solicitud_material_anticipada || materialRequests.some(r => r.casoId === selectedCase.id)) && (
                       <button 
                         type="button"
                         className={`case-tab-btn ${caseDetailTab === 'materiales' ? 'active' : ''}`}
@@ -3505,6 +5156,88 @@ export default function App() {
                           {selectedCase.descripcion}
                         </div>
                       </div>
+
+                      {/* Materiales Solicitados por Adelantado */}
+                      {selectedCase.solicitud_material_anticipada && (
+                        <div className="detail-card" style={{ background: 'var(--bg-surface)', borderLeft: '4px solid #f59e0b' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                            <div style={{ fontSize: '0.76rem', color: '#d97706', fontWeight: 800, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              📦 Materiales Solicitados por Adelantado:
+                            </div>
+                            <span className={`material-status ${selectedCase.material_anticipado_estado || 'pendiente_aprobacion'}`}>
+                              {selectedCase.material_anticipado_estado === 'aprobado' ? '✅ Aprobado' : selectedCase.material_anticipado_estado === 'rechazado' ? '❌ Rechazado' : '⏳ Pendiente'}
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {selectedCase.material_anticipado_items && selectedCase.material_anticipado_items.length > 0 ? (
+                              selectedCase.material_anticipado_items.map((item, idx) => (
+                                <div 
+                                  key={idx}
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    padding: '6px 10px',
+                                    background: 'var(--bg-panel)',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '0.82rem'
+                                  }}
+                                >
+                                  <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                                    • {item.nombre}
+                                  </span>
+                                  <span style={{ fontWeight: 700, color: 'var(--primary)', background: 'var(--bg-surface)', padding: '2px 8px', borderRadius: '10px', fontSize: '0.75rem', border: '1px solid var(--border-color)' }}>
+                                    Cant: {item.cantidad}
+                                  </span>
+                                </div>
+                              ))
+                            ) : (
+                              (selectedCase.material_anticipado_nombre || '').split(' | ').map((str, idx) => (
+                                <div 
+                                  key={idx}
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    padding: '6px 10px',
+                                    background: 'var(--bg-panel)',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '0.82rem'
+                                  }}
+                                >
+                                  <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                                    • {str}
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+
+                          {(currentUser.rol === 'supervisor' || currentUser.rol === 'administrador') && selectedCase.material_anticipado_estado !== 'aprobado' && selectedCase.material_anticipado_estado !== 'rechazado' && (
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '10px', justifyContent: 'flex-end' }}>
+                              <button 
+                                type="button"
+                                className="btn btn-sm"
+                                onClick={() => handleApprovePreMaterials(selectedCase.id)}
+                                style={{ background: 'var(--color-resolved)', color: '#fff', fontSize: '0.75rem', fontWeight: 700, padding: '4px 10px' }}
+                              >
+                                ✓ Aprobar Materiales
+                              </button>
+                              <button 
+                                type="button"
+                                className="btn btn-danger btn-sm"
+                                onClick={() => handleDenyPreMaterials(selectedCase.id)}
+                                style={{ fontSize: '0.75rem', fontWeight: 700, padding: '4px 10px' }}
+                              >
+                                ✕ Denegar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {/* Asignación y Técnicos a Cargo */}
                       {(selectedCase.tecnico_presencial_nombre || selectedCase.tecnico_apoyo_nombre || selectedCase.tecnicoAsignadoId) && (
@@ -3570,13 +5303,28 @@ export default function App() {
                               setTakeCaseMode('solo');
                               setTakeCaseSupportTech('');
                               setShowTakeCaseModal(true);
-                            }} style={{ width: '100%', fontWeight: 700 }}>
-                              🔧 Iniciar Trabajo (Tomar caso)
+                            }} style={{ width: '100%', fontWeight: 700, padding: '12px' }}>
+                              ⚡ Tomar Caso e Iniciar Trabajo Presencial
                             </button>
                           )}
 
-                          {/* Agendar Turno de Atención */}
-                          {selectedCase.estado !== 'concluido' && selectedCase.estado !== 'cerrado' && (
+                          {/* Confirmar Llegada de Técnico por Tienda en Caso Pendiente */}
+                          {((currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && currentUser.tiendaId === selectedCase.tiendaId) && selectedCase.estado === 'pendiente' && (
+                            <button 
+                              className="btn btn-primary" 
+                              onClick={() => {
+                                const techList = users.filter(u => u.rol === 'tecnico');
+                                const preAssignedName = selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || (techList[0]?.nombre || 'Técnico');
+                                handleLogTechEntry(selectedCase.id, preAssignedName);
+                              }}
+                              style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800 }}
+                            >
+                              🟢 Confirmar Llegada del Técnico e Iniciar Caso
+                            </button>
+                          )}
+
+                          {/* Agendar Turno de Atención (Solo para Local, Supervisor y Administrador) */}
+                          {currentUser.rol !== 'tecnico' && selectedCase.estado !== 'concluido' && selectedCase.estado !== 'cerrado' && (
                             <button
                               type="button"
                               className="btn btn-secondary"
@@ -3587,56 +5335,155 @@ export default function App() {
                             </button>
                           )}
 
-                          {/* Completar Trabajo para Técnico */}
-                          {currentUser.rol === 'tecnico' && selectedCase.estado === 'en_proceso' && selectedCase.tecnicoAsignadoId === currentUser.id && (
-                            <button className="btn btn-primary" onClick={() => setShowSolveModal(true)} style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800 }}>
-                              ✅ Completar y Cerrar Mantenimiento
-                            </button>
+                          {/* ACCIONES EN PROCESO (NO PAUSADO) */}
+                          {selectedCase.estado === 'en_proceso' && !selectedCase.pausado_por_material && (
+                            <>
+                              {currentUser.rol === 'tecnico' && (!activePunchClock || activePunchClock.casoId !== selectedCase.id) && (
+                                <button 
+                                  type="button"
+                                  className="btn btn-secondary" 
+                                  onClick={() => {
+                                    handleLogTechEntry(selectedCase.id, currentUser.nombre);
+                                    const currentVisits = selectedCase.jornadas?.length || 1;
+                                    const punch: ActiveTechPunchClock = {
+                                      tecnicoId: currentUser.id,
+                                      tecnicoNombre: currentUser.nombre,
+                                      tiendaId: selectedCase.tiendaId,
+                                      casoId: selectedCase.id,
+                                      horaIngreso: new Date().toISOString(),
+                                      numeroVisita: currentVisits,
+                                      esNuevoCaso: false
+                                    };
+                                    setActivePunchClock(punch);
+                                    try {
+                                      localStorage.setItem(`maint_tech_punch_${currentUser.id}`, JSON.stringify(punch));
+                                    } catch {}
+                                    setMaintToast({
+                                      mostrar: true,
+                                      titulo: '⏱️ Timbrador Activado',
+                                      mensaje: `Has registrado tu ingreso presencial al Caso #${selectedCase.id}.`,
+                                      tipo: 'success'
+                                    });
+                                  }}
+                                  style={{ width: '100%', fontWeight: 800, borderColor: '#3B82F6', color: '#1D4ED8', background: 'rgba(59,130,246,0.08)', padding: '11px', marginBottom: '4px' }}
+                                >
+                                  ⏱️ Incorporarme / Iniciar Timbrador en este Caso
+                                </button>
+                              )}
+                              <button 
+                                className="btn btn-primary" 
+                                onClick={() => setShowSolveModal(true)} 
+                                style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800 }}
+                              >
+                                {currentUser.rol === 'tecnico'
+                                  ? '✅ Concluir Trabajo & Subir Evidencias Fotográficas'
+                                  : '✅ Concluir Trabajo'}
+                              </button>
+
+                              <button 
+                                type="button"
+                                className="btn btn-warning" 
+                                onClick={() => {
+                                  setPauseReasonInput('');
+                                  setShowPauseMaterialModal(true);
+                                }}
+                                style={{ width: '100%', fontWeight: 800, background: '#d97706', color: '#ffffff' }}
+                              >
+                                ⏸️ Pausar Caso (Falta de Materiales / Imprevisto)
+                              </button>
+                            </>
+                          )}
+
+                          {/* ACCIONES EN CASO PAUSADO */}
+                          {selectedCase.pausado_por_material && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                              <div style={{ background: '#fefce8', border: '1px solid #fef08a', padding: '10px 12px', borderRadius: '8px', fontSize: '0.8rem', color: '#a16207' }}>
+                                <strong>⏸️ Caso en Pausa:</strong> "{selectedCase.motivo_pausa_material || 'Falta de materiales'}"
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                  Salida de visita anterior registrada. Cuando se regrese a tienda, marca el reingreso para continuar.
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={() => handleLogTechEntry(selectedCase.id, selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico')}
+                                style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800, padding: '10px' }}
+                              >
+                                🟢 Registrar Reingreso a Tienda y Reanudar Labores
+                              </button>
+
+                              <button 
+                                type="button"
+                                className="btn btn-primary" 
+                                onClick={() => setShowSolveModal(true)} 
+                                style={{ width: '100%', background: '#059669', fontWeight: 800 }}
+                              >
+                                {currentUser.rol === 'tecnico'
+                                  ? '✅ Concluir Trabajo & Subir Evidencias Fotográficas'
+                                  : '✅ Concluir Trabajo'}
+                              </button>
+
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => handleConfirmMaterialsArrived(selectedCase.id)}
+                                style={{ width: '100%', borderColor: '#10B981', color: '#059669', fontWeight: 700 }}
+                              >
+                                📦 Confirmar Llegada de Materiales a Tienda
+                              </button>
+                            </div>
                           )}
 
                           {/* Validar y Cerrar por Tienda / Admin */}
-                          {((currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && currentUser.tiendaId === selectedCase.tiendaId) && selectedCase.estado === 'concluido' && (
+                          {((currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe' || currentUser.rol === 'supervisor' || currentUser.rol === 'administrador')) && selectedCase.estado === 'concluido' && (
                             <>
+                              <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '10px 12px', borderRadius: '8px', fontSize: '0.82rem', color: '#047857' }}>
+                                <strong>📋 Trabajo Técnico Finalizado:</strong> El técnico ha registrado su salida y subido las evidencias. El personal de la tienda debe corroborar el resultado del trabajo:
+                              </div>
+
                               <button className="btn btn-primary" onClick={() => handleCloseCase(selectedCase.id)} style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800 }}>
-                                🔒 Validar Solución y Cerrar Caso
+                                ✅ Corroborar y Aprobar Conclusión Definitiva (Cerrar)
                               </button>
                               
-                              {/* Reabrir caso concluido: Exclusivo para usuarios de la tienda del caso */}
-                              {(currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && currentUser.tiendaId === selectedCase.tiendaId && (
-                                !showReopenInput ? (
-                                  <button className="btn btn-danger" onClick={() => setShowReopenInput(true)} style={{ width: '100%', fontWeight: 700 }}>
-                                    🔄 Reabrir Caso (No quedó bien)
-                                  </button>
-                                ) : (
-                                  <div style={{ border: '1px solid var(--border-color)', padding: '12px', borderRadius: 'var(--radius-sm)', marginTop: '8px', background: 'var(--bg-surface)' }}>
-                                    <label className="field-label" style={{ color: 'var(--color-critical)', marginBottom: '5px' }}>¿Por qué se reabre?:</label>
-                                    <textarea 
-                                      className="input-box" 
-                                      style={{ minHeight: '60px', fontSize: '0.85rem' }} 
-                                      placeholder="Indique detalladamente el problema..." 
-                                      value={reopenReason}
-                                      onChange={e => setReopenReason(e.target.value)}
-                                    />
-                                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-                                      <button className="btn btn-danger btn-sm" onClick={() => handleReopenCase(selectedCase.id)}>Confirmar</button>
-                                      <button className="btn btn-secondary btn-sm" onClick={() => setShowReopenInput(false)}>Cancelar</button>
-                                    </div>
+                              {/* Reabrir caso concluido */}
+                              {!showReopenInput ? (
+                                <button className="btn btn-danger" onClick={() => setShowReopenInput(true)} style={{ width: '100%', fontWeight: 700 }}>
+                                  🔄 Reabrir Caso (No quedó bien / Falla persiste)
+                                </button>
+                              ) : (
+                                <div style={{ border: '1px solid var(--border-color)', padding: '12px', borderRadius: 'var(--radius-sm)', marginTop: '4px', background: 'var(--bg-surface)' }}>
+                                  <label className="field-label" style={{ color: 'var(--color-critical)', marginBottom: '5px' }}>Motivo de la Reapertura (Obligatorio):</label>
+                                  <textarea 
+                                    className="input-box" 
+                                    style={{ minHeight: '60px', fontSize: '0.85rem' }} 
+                                    placeholder="Indique detalladamente por qué el trabajo no quedó conforme o qué problema persiste..." 
+                                    value={reopenReason}
+                                    onChange={e => setReopenReason(e.target.value)}
+                                  />
+                                  <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                                    <button className="btn btn-danger btn-sm" disabled={!reopenReason.trim()} onClick={() => handleReopenCase(selectedCase.id)}>Confirmar Reapertura</button>
+                                    <button className="btn btn-secondary btn-sm" onClick={() => setShowReopenInput(false)}>Cancelar</button>
                                   </div>
-                                )
+                                </div>
                               )}
                             </>
                           )}
 
-                          {/* Reabrir caso cerrado: Exclusivo para usuarios de la tienda del caso */}
-                          {selectedCase.estado === 'cerrado' && (currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && currentUser.tiendaId === selectedCase.tiendaId && (
+                          {/* Reabrir caso cerrado */}
+                          {selectedCase.estado === 'cerrado' && (currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe' || currentUser.rol === 'supervisor' || currentUser.rol === 'administrador') && (
                             <div>
+                              <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', padding: '8px 12px', borderRadius: '8px', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                                🔒 Caso Cerrado y Aprobado. Si la falla vuelve a presentarse en el futuro, puedes reabrir el caso:
+                              </div>
+
                               {!showReopenInput ? (
                                 <button 
                                   className="btn btn-warning" 
                                   style={{ width: '100%', padding: '10px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }} 
                                   onClick={() => setShowReopenInput(true)}
                                 >
-                                  🔄 Reabrir Caso por Incumplimiento
+                                  🔄 Reabrir Caso por Incumplimiento o Falla Reincidente
                                 </button>
                               ) : (
                                 <div style={{ padding: '10px', background: 'var(--bg-surface)', borderRadius: '8px', border: '1px solid #f59e0b' }}>
@@ -3651,7 +5498,7 @@ export default function App() {
                                     onChange={e => setReopenReason(e.target.value)}
                                   />
                                   <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-                                    <button className="btn btn-danger btn-sm" onClick={() => handleReopenCase(selectedCase.id)}>Confirmar Reapertura</button>
+                                    <button className="btn btn-danger btn-sm" disabled={!reopenReason.trim()} onClick={() => handleReopenCase(selectedCase.id)}>Confirmar Reapertura</button>
                                     <button className="btn btn-secondary btn-sm" onClick={() => setShowReopenInput(false)}>Cancelar</button>
                                   </div>
                                 </div>
@@ -3674,14 +5521,107 @@ export default function App() {
                         {(() => {
                           const isStoreUserForThisCase = (currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && currentUser.tiendaId === selectedCase.tiendaId;
                           const isTechUser = currentUser.rol === 'tecnico';
-                          const canManageAttendance = isStoreUserForThisCase || isTechUser;
+                          const canManageAttendance = isStoreUserForThisCase || isTechUser || currentUser.rol === 'supervisor' || currentUser.rol === 'administrador';
 
-                          // CASO A: PENDIENTE DE PRIMER INGRESO
-                          if ((!selectedCase.hora_entrada || selectedCase.estado === 'pendiente') && !selectedCase.pausado_por_material) {
+                          // CASO 1: CASO YA CONCLUIDO O CERRADO DEFINITIVAMENTE
+                          if (selectedCase.estado === 'concluido' || selectedCase.estado === 'cerrado') {
+                            return (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                <div style={{ background: '#ecfdf5', padding: '14px', borderRadius: '8px', border: '1px solid #a7f3d0' }}>
+                                  <div style={{ fontSize: '0.86rem', color: '#047857', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    ✅ TRABAJO TÉCNICO FINALIZADO ({getCaseJornadas(selectedCase).length} {getCaseJornadas(selectedCase).length === 1 ? 'visita realizada' : 'visitas realizadas'})
+                                  </div>
+                                  <div style={{ fontSize: '0.82rem', color: 'var(--text-main)', marginTop: '4px' }}>
+                                    👷 <strong>{selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico'}</strong>
+                                  </div>
+                                  {selectedCase.hora_salida && (
+                                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '3px' }}>
+                                      🔴 Salida final registrada a las: <strong>{new Date(selectedCase.hora_salida).toLocaleTimeString()}</strong>
+                                    </div>
+                                  )}
+                                  <div style={{ fontSize: '0.78rem', color: '#059669', marginTop: '4px' }}>
+                                    {selectedCase.estado === 'concluido' 
+                                      ? '📋 Estado: Concluido con evidencias fotográficas. En espera de corroboración del local.' 
+                                      : '🔒 Estado: Cerrado y validado definitivamente.'}
+                                  </div>
+                                </div>
+
+                                {selectedCase.estado === 'concluido' && (currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe' || currentUser.rol === 'supervisor' || currentUser.rol === 'administrador') && (
+                                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                    <button 
+                                      type="button" 
+                                      className="btn btn-primary" 
+                                      onClick={() => handleCloseCase(selectedCase.id)} 
+                                      style={{ flex: 1, minWidth: '160px', background: 'var(--color-resolved)', fontWeight: 800 }}
+                                    >
+                                      ✅ Aprobar y Cerrar Caso
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          // CASO 2: EN PAUSA POR MATERIALES O IMPREVISTO
+                          if (selectedCase.pausado_por_material) {
+                            return (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                <div style={{ background: '#fefce8', border: '1px solid #fef08a', padding: '12px', borderRadius: '8px' }}>
+                                  <div style={{ fontSize: '0.84rem', color: '#a16207', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    ⏸️ CASO EN PAUSA (Salida de técnico registrada)
+                                  </div>
+                                  <p style={{ fontSize: '0.82rem', color: 'var(--text-main)', margin: '6px 0 0 0', lineHeight: 1.4 }}>
+                                    <strong>Motivo de la pausa:</strong> "{selectedCase.motivo_pausa_material || 'Falta de materiales o presupuesto'}"
+                                  </p>
+                                  {selectedCase.hora_salida && (
+                                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                                      ⏱️ Salida de visita anterior: {new Date(selectedCase.hora_salida).toLocaleTimeString()}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {canManageAttendance && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn btn-primary"
+                                      onClick={() => handleLogTechEntry(selectedCase.id, selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico')}
+                                      style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800, padding: '10px', fontSize: '0.85rem' }}
+                                    >
+                                      🟢 Registrar Reingreso del Técnico y Reanudar Labores
+                                    </button>
+
+                                    <button 
+                                      type="button"
+                                      className="btn btn-primary" 
+                                      onClick={() => setShowSolveModal(true)} 
+                                      style={{ width: '100%', background: '#059669', fontWeight: 800, padding: '10px', fontSize: '0.85rem' }}
+                                    >
+                                      {currentUser.rol === 'tecnico'
+                                        ? '✅ Concluir Trabajo & Subir Evidencias Fotográficas'
+                                        : '✅ Concluir Trabajo'}
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => handleConfirmMaterialsArrived(selectedCase.id)}
+                                      style={{ width: '100%', borderColor: '#10B981', color: '#059669', fontWeight: 700 }}
+                                    >
+                                      📦 Confirmar Llegada de Materiales a Tienda
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          // CASO 3: PENDIENTE DE PRIMER INGRESO (O TRAS REAPERTURA)
+                          if (!selectedCase.hora_entrada || selectedCase.estado === 'pendiente') {
                             if (!canManageAttendance) {
                               return (
                                 <div style={{ background: 'var(--bg-surface)', padding: '14px', borderRadius: '8px', border: '1px solid var(--border-color)', color: 'var(--text-muted)', fontSize: '0.84rem' }}>
-                                  ℹ️ <em>El registro de ingreso físico y confirmación de llegada del técnico corresponde al personal de la tienda.</em>
+                                  ℹ️ <em>El registro de ingreso físico y confirmación de llegada del técnico corresponde al personal de la tienda o al técnico asignado.</em>
                                 </div>
                               );
                             }
@@ -3731,50 +5671,7 @@ export default function App() {
                             );
                           }
 
-                          // CASO B: EN PAUSA POR MATERIALES
-                          if (selectedCase.pausado_por_material) {
-                            return (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                <div style={{ background: '#fefce8', border: '1px solid #fef08a', padding: '12px', borderRadius: '8px' }}>
-                                  <div style={{ fontSize: '0.84rem', color: '#a16207', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                    ⏸️ CASO EN PAUSA (Salida de técnico registrada)
-                                  </div>
-                                  <p style={{ fontSize: '0.82rem', color: 'var(--text-main)', margin: '6px 0 0 0', lineHeight: 1.4 }}>
-                                    <strong>Motivo de la pausa:</strong> "{selectedCase.motivo_pausa_material || 'Falta de materiales o presupuesto'}"
-                                  </p>
-                                  {selectedCase.hora_salida && (
-                                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                                      ⏱️ Salida de visita anterior: {new Date(selectedCase.hora_salida).toLocaleTimeString()}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {canManageAttendance && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      className="btn btn-primary"
-                                      onClick={() => handleLogTechEntry(selectedCase.id, selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico')}
-                                      style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800, padding: '10px', fontSize: '0.85rem' }}
-                                    >
-                                      🟢 Registrar Segundo Ingreso del Técnico y Reanudar Labores
-                                    </button>
-
-                                    <button
-                                      type="button"
-                                      className="btn btn-secondary btn-sm"
-                                      onClick={() => handleConfirmMaterialsArrived(selectedCase.id)}
-                                      style={{ width: '100%', borderColor: '#10B981', color: '#059669', fontWeight: 700 }}
-                                    >
-                                      📦 Confirmar Llegada de Materiales a Tienda
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            );
-                          }
-
-                          // CASO C: TÉCNICO LABORANDO ACTIVAMENTE
+                          // CASO 4: TÉCNICO LABORANDO ACTIVAMENTE EN TIENDA (EN PROCESO)
                           if (!selectedCase.hora_salida) {
                             return (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -3793,24 +5690,33 @@ export default function App() {
                                 {canManageAttendance && (
                                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                                     <button 
-                                      type="button"
-                                      className="btn btn-danger" 
-                                      onClick={() => handleLogTechExit(selectedCase.id)}
-                                      style={{ flex: 1, minWidth: '140px', padding: '10px', fontWeight: 800, fontSize: '0.82rem' }}
+                                      type="button" 
+                                      className="btn btn-primary" 
+                                      onClick={() => setShowSolveModal(true)} 
+                                      style={{ flex: 1, minWidth: '150px', padding: '10px', fontWeight: 800, fontSize: '0.82rem', background: 'var(--color-resolved)' }}
                                     >
-                                      🔴 Marcar Salida del Técnico
+                                      {currentUser.rol === 'tecnico' ? '✅ Concluir Trabajo & Fotos' : '✅ Concluir Trabajo'}
                                     </button>
 
                                     <button 
-                                      type="button"
+                                      type="button" 
                                       className="btn btn-warning" 
                                       onClick={() => {
                                         setPauseReasonInput('');
                                         setShowPauseMaterialModal(true);
                                       }}
-                                      style={{ flex: 1, minWidth: '140px', padding: '10px', fontWeight: 800, fontSize: '0.82rem', background: '#d97706', color: '#ffffff' }}
+                                      style={{ flex: 1, minWidth: '150px', padding: '10px', fontWeight: 800, fontSize: '0.82rem', background: '#d97706', color: '#ffffff' }}
                                     >
                                       ⏸️ Pausar y Marcar Salida
+                                    </button>
+
+                                    <button 
+                                      type="button" 
+                                      className="btn btn-secondary" 
+                                      onClick={() => handleLogTechExit(selectedCase.id)}
+                                      style={{ minWidth: '130px', padding: '10px', fontWeight: 700, fontSize: '0.82rem' }}
+                                    >
+                                      🚪 Salida Temporal
                                     </button>
                                   </div>
                                 )}
@@ -3818,7 +5724,7 @@ export default function App() {
                             );
                           }
 
-                          // CASO D: TÉCNICO RETIRADO TEMPORALMENTE
+                          // CASO 5: TÉCNICO RETIRADO TEMPORALMENTE (EN PROCESO CON SALIDA)
                           return (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                               <div style={{ background: 'var(--bg-surface)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.82rem' }}>
@@ -3835,7 +5741,7 @@ export default function App() {
                                   onClick={() => handleLogTechEntry(selectedCase.id, selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico')}
                                   style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800, padding: '10px', fontSize: '0.85rem' }}
                                 >
-                                  🟢 Registrar Nuevo Ingreso del Técnico a Tienda
+                                  🟢 Registrar Reingreso del Técnico a Tienda
                                 </button>
                               )}
                             </div>
@@ -3887,9 +5793,9 @@ export default function App() {
                           📜 Auditoría y Cambios de Estado
                         </div>
                         <div className="history-timeline">
-                          {selectedCase.historial.map((h, i) => (
+                          {(selectedCase.historial || []).map((h, i) => (
                             <div key={h.id} className="history-node">
-                              <div className={`history-dot ${i === selectedCase.historial.length - 1 ? 'active' : ''}`}></div>
+                              <div className={`history-dot ${i === (selectedCase.historial?.length || 0) - 1 ? 'active' : ''}`}></div>
                               <div className="history-content">
                                 <span className="history-time">{new Date(h.fecha).toLocaleString()}</span>
                                 <span className="history-text">
@@ -3928,7 +5834,7 @@ export default function App() {
                           {(selectedCase.comentarios?.length || 0) === 0 ? (
                             <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', textAlign: 'center', padding: '12px 0' }}>No hay comentarios todavía.</p>
                           ) : (
-                            selectedCase.comentarios.map(c => (
+                            (selectedCase.comentarios || []).map(c => (
                               <div key={c.id} className="comment-bubble">
                                 <div className="comment-meta">
                                   <strong>{c.autor} ({c.rol === 'jefe_tienda' ? 'Jefe' : c.rol})</strong>
@@ -3957,7 +5863,7 @@ export default function App() {
                           </div>
                         ) : (
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
-                            {selectedCase.evidencias.map(ev => (
+                            {(selectedCase.evidencias || []).map(ev => (
                               <div key={ev.id} style={{ border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden', background: 'var(--bg-surface)' }}>
                                 <img src={ev.archivoUrl} alt="evidencia" style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }} />
                                 <div style={{ fontSize: '0.72rem', padding: '8px', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -3973,7 +5879,7 @@ export default function App() {
                   )}
 
                   {/* TAB 5: MATERIALES */}
-                  {caseDetailTab === 'materiales' && selectedCase.estado === 'en_proceso' && (
+                  {caseDetailTab === 'materiales' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                       <div className="detail-card">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
@@ -4013,7 +5919,7 @@ export default function App() {
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                   <span style={{ fontWeight: 650, color: 'var(--text-main)' }}>{r.descripcion}</span>
                                   <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                                    Por: {users.find(u => u.id === r.tecnicoId)?.nombre || 'Técnico'}
+                                    Por: {r.solicitadoPorNombre || users.find(u => u.id === (r.solicitadoPorId || r.tecnicoId))?.nombre || 'Técnico'} {r.solicitadoPorRol ? `(${r.solicitadoPorRol === 'jefe_tienda' ? 'Jefe de Tienda' : r.solicitadoPorRol === 'subjefe' ? 'Subjefe' : r.solicitadoPorRol})` : ''}
                                   </span>
                                 </div>
                                 
@@ -4034,12 +5940,12 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* Catálogo de Materiales para Técnico */}
-                        {currentUser.rol === 'tecnico' && selectedCase.tecnicoAsignadoId === currentUser.id && (
+                        {/* Catálogo de Materiales para Tiendas, Técnicos y Supervisores */}
+                        {((currentUser.rol === 'tecnico') || (currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') || (currentUser.rol === 'supervisor' || currentUser.rol === 'administrador')) && (
                           <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '14px', marginTop: '10px' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                               <label className="field-label" style={{ fontSize: '0.8rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
-                                📦 Nueva Petición de Repuesto:
+                                📦 Solicitar Repuesto o Material Adicional:
                               </label>
                               <div style={{ display: 'flex', gap: '6px' }}>
                                 <button
@@ -4240,6 +6146,11 @@ export default function App() {
                   setAdmRole={setAdmRole as any}
                   admTiendaNombre={admTiendaNombre}
                   setAdmTiendaNombre={setAdmTiendaNombre}
+                  admTiendaCiudad={admTiendaCiudad}
+                  setAdmTiendaCiudad={setAdmTiendaCiudad}
+                  admIsNewStoreMode={admIsNewStoreMode}
+                  setAdmIsNewStoreMode={setAdmIsNewStoreMode}
+                  isSubmittingAdminUser={isSubmittingAdminUser}
                   handleAdminUserSubmit={handleAdminUserSubmit}
                   handleStartEditUser={handleStartEditUser}
                   handleCancelEditUser={handleCancelEditUser}
@@ -4300,9 +6211,132 @@ export default function App() {
               ) : (
 
                 /* VIEW C: SIMPLIFIED CASES DASHBOARD (CARDS GRID) */
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   
+                  {/* TIMBRADOR OBLIGATORIO Y CONSOLA EN TIENDA (SOLO TÉCNICOS) */}
+                  {currentUser.rol === 'tecnico' && (
+                    <TechTimbradorBanner
+                      currentUser={currentUser}
+                      activePunchClock={activePunchClock}
+                      stores={stores}
+                      cases={cases}
+                      onOpenClockIn={() => setShowTechTimbradorModal(true)}
+                      onOpenClockOut={() => setShowTechTimbradorModal(true)}
+                      onOpenEditCase={handleOpenEditCase}
+                      onOpenCaseDetail={setSelectedCaseId}
+                    />
+                  )}
 
+                  {/* Human Welcome & Operational Summary Banner */}
+                  <div className="human-welcome-banner">
+                    <div className="human-welcome-content">
+                      <div className="human-welcome-greeting">
+                        ¡Hola, <strong>{currentUser.nombre.split(' ')[0]}</strong>! 👋
+                      </div>
+                      <div className="human-welcome-status">
+                        {casesViewMode === 'pendientes' ? (
+                          activeCases.length > 0 ? (
+                            <span>Tienes <strong>{activeCases.length} caso{activeCases.length > 1 ? 's' : ''} pendiente{activeCases.length > 1 ? 's' : ''} o en curso</strong> que requieren tu atención hoy.</span>
+                          ) : (
+                            <span>🎉 <strong>¡Excelente trabajo!</strong> No tienes reportes pendientes en este momento. Todas las tiendas están operando sin novedades.</span>
+                          )
+                        ) : (
+                          <span>Revisando el historial de <strong>{concludedCases.length} caso{concludedCases.length > 1 ? 's' : ''} concluido{concludedCases.length > 1 ? 's' : ''}</strong> y cerrado{concludedCases.length > 1 ? 's' : ''} con éxito.</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="human-welcome-kpis">
+                      <div className="kpi-mini" style={{ background: 'rgba(30, 58, 138, 0.08)', borderColor: 'rgba(30, 58, 138, 0.25)' }}>
+                        <span className="kpi-mini-num" style={{ color: 'var(--primary)' }}>{activeCases.length}</span>
+                        <span className="kpi-mini-lbl">Activos</span>
+                      </div>
+                      <div className="kpi-mini urgent">
+                        <span className="kpi-mini-num">{activeCases.filter(c => isSlaBreached(c)).length}</span>
+                        <span className="kpi-mini-lbl">Urgentes SLA</span>
+                      </div>
+                      <div className="kpi-mini in-progress">
+                        <span className="kpi-mini-num">{inProgressCases.length}</span>
+                        <span className="kpi-mini-lbl">En Proceso</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Dual Mode Segmented Tab Selector: Pendientes vs Concluidos */}
+                  <div className="cases-view-selector">
+                    <button
+                      type="button"
+                      className={`cases-view-tab ${casesViewMode === 'pendientes' ? 'active' : ''}`}
+                      onClick={() => {
+                        setCasesViewMode('pendientes');
+                        if (statusFilter === 'completado') setStatusFilter('todos');
+                      }}
+                    >
+                      <span className="cases-tab-icon">⚡</span>
+                      <div className="cases-tab-texts">
+                        <span className="cases-tab-title">Casos Pendientes y En Curso</span>
+                        <span className="cases-tab-subtitle">Requieren atención operativa inmediata</span>
+                      </div>
+                      <span className="cases-tab-badge pending">{activeCases.length}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className={`cases-view-tab ${casesViewMode === 'concluidos' ? 'active' : ''}`}
+                      onClick={() => {
+                        setCasesViewMode('concluidos');
+                        setStatusFilter('completado');
+                      }}
+                    >
+                      <span className="cases-tab-icon">✅</span>
+                      <div className="cases-tab-texts">
+                        <span className="cases-tab-title">Historial de Concluidos</span>
+                        <span className="cases-tab-subtitle">Mantenimientos finalizados y cerrados</span>
+                      </div>
+                      <span className="cases-tab-badge completed">{concludedCases.length}</span>
+                    </button>
+                  </div>
+
+                  {/* Quick Filters for Active Cases */}
+                  {casesViewMode === 'pendientes' && (
+                    <div className="active-quick-filters">
+                      <button
+                        type="button"
+                        className={`quick-chip ${statusFilter === 'todos' ? 'active' : ''}`}
+                        onClick={() => setStatusFilter('todos')}
+                      >
+                        <span>⚡ Todos los Pendientes</span>
+                        <span className="quick-chip-badge">{activeCases.length}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`quick-chip ${statusFilter === 'pendiente' ? 'active' : ''}`}
+                        onClick={() => setStatusFilter('pendiente')}
+                      >
+                        <span>⏳ Sin Asignar / Nuevos</span>
+                        <span className="quick-chip-badge">{pendingUnassigned.length}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`quick-chip ${statusFilter === 'en_proceso' ? 'active' : ''}`}
+                        onClick={() => setStatusFilter('en_proceso')}
+                      >
+                        <span>🔧 En Atención Técnica</span>
+                        <span className="quick-chip-badge">{inProgressCases.length}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`quick-chip ${statusFilter === 'pausado_material' ? 'active' : ''}`}
+                        onClick={() => setStatusFilter('pausado_material')}
+                      >
+                        <span>📦 Esperando Repuestos</span>
+                        <span className="quick-chip-badge">{pausedCases.length}</span>
+                      </button>
+                    </div>
+                  )}
 
                   {/* Ultra-Premium Search and Store Filter bar */}
                   <div className="search-controls-container">
@@ -4344,11 +6378,20 @@ export default function App() {
                       )}
                     </div>
                   </div>
+
                   {/* Clean Tickets Cards List */}
                   <div className="cards-grid">
                     {getFilteredCases().length === 0 ? (
-                      <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)', border: '2px dashed var(--border-color)', borderRadius: 'var(--radius-md)' }}>
-                        No hay reportes de mantenimiento registrados en esta sección.
+                      <div className="human-empty-state">
+                        <div className="human-empty-icon">{casesViewMode === 'pendientes' ? '🎉' : '📂'}</div>
+                        <div className="human-empty-title">
+                          {casesViewMode === 'pendientes' ? '¡Todo al día y sin pendientes!' : 'No hay casos concluidos todavía'}
+                        </div>
+                        <div className="human-empty-desc">
+                          {casesViewMode === 'pendientes'
+                            ? 'No se encontraron solicitudes de mantenimiento pendientes en este filtro. Todos los reportes operativos han sido atendidos.'
+                            : 'Los casos de mantenimiento finalizados y cerrados se archivarán aquí automáticamente.'}
+                        </div>
                       </div>
                     ) : (
                       getFilteredCases().map(c => {
@@ -4362,7 +6405,7 @@ export default function App() {
                                 <span>•</span>
                                 <span>🏬 {tienda?.nombre} ({tienda?.ciudad})</span>
                                 <span>•</span>
-                                <span>📅 {new Date(c.fechaCreacion).toLocaleDateString()}</span>
+                                <span>📅 {getHumanDate(c.fechaCreacion)}</span>
                               </div>
                               <div className="card-title">{c.categoria}</div>
                               <div className="card-desc">{c.descripcion}</div>
@@ -4371,12 +6414,12 @@ export default function App() {
                               {(c.tecnicoAsignadoId || c.tecnico_presencial_nombre || c.hora_entrada) && (
                                 <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '0.75rem' }}>
                                   {(c.tecnicoAsignadoId || c.tecnico_presencial_nombre) && (
-                                    <span style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--primary)', padding: '2px 8px', borderRadius: '4px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                    <span style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--primary)', padding: '3px 9px', borderRadius: '6px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                                       👷 Técnico: {users.find(u => u.id === c.tecnicoAsignadoId)?.nombre || c.tecnico_presencial_nombre}
                                     </span>
                                   )}
                                   {c.hora_entrada && (
-                                    <span style={{ background: 'rgba(16, 185, 129, 0.1)', color: 'var(--color-resolved)', padding: '2px 8px', borderRadius: '4px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                    <span style={{ background: 'rgba(16, 185, 129, 0.1)', color: 'var(--color-resolved)', padding: '3px 9px', borderRadius: '6px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                                       ⏱️ Entrada: {new Date(c.hora_entrada).toLocaleTimeString()} {c.hora_salida ? `| Salida: ${new Date(c.hora_salida).toLocaleTimeString()}` : (c.estado === 'concluido' || c.estado === 'cerrado') ? `| Salida: ${new Date(c.fechaCierre || c.fechaCreacion).toLocaleTimeString()}` : '| 🟢 En tienda'}
                                     </span>
                                   )}
@@ -4386,7 +6429,7 @@ export default function App() {
 
                             <div className="card-right-info">
                               {!c.es_caso_tecnico && breached && (
-                                <span className="badge" style={{ color: 'var(--color-critical)', borderColor: 'var(--color-critical)', background: 'rgba(220,38,38,0.05)' }}>
+                                <span className="badge" style={{ color: 'var(--color-critical)', borderColor: 'var(--color-critical)', background: 'rgba(220,38,38,0.08)', fontWeight: 800 }}>
                                   ⚠️ FUERA SLA
                                 </span>
                               )}
@@ -4405,6 +6448,60 @@ export default function App() {
                                 </span>
                               )}
                             </div>
+
+                            <div className="card-action-hint">
+                              <span style={{ color: 'var(--text-subtle)', fontSize: '0.72rem' }}>
+                                {c.estado === 'concluido' || c.estado === 'cerrado' ? '✅ Caso Concluido' : breached ? '⚠️ Requiere atención urgente' : '🟢 En seguimiento activo'}
+                              </span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                {currentUser?.rol === 'tecnico' && c.estado === 'pendiente' && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-primary btn-sm"
+                                    style={{ padding: '3px 10px', fontSize: '0.74rem', borderRadius: '5px', fontWeight: 700, marginRight: '4px' }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedCaseId(c.id);
+                                      setTakeCaseMode('solo');
+                                      setTakeCaseSupportTech('');
+                                      setShowTakeCaseModal(true);
+                                    }}
+                                    title="Tomar e iniciar atención presencial de este caso"
+                                  >
+                                    ⚡ Tomar Caso
+                                  </button>
+                                )}
+                                {canEditOrDeleteCase(c) && (
+                                  <div style={{ display: 'inline-flex', gap: '5px', marginRight: '4px' }} onClick={e => e.stopPropagation()}>
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      style={{ padding: '2px 8px', fontSize: '0.72rem', borderRadius: '5px' }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenEditCase(c);
+                                      }}
+                                      title="Editar este caso"
+                                    >
+                                      ✏️ Editar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-danger btn-sm"
+                                      style={{ padding: '2px 8px', fontSize: '0.72rem', borderRadius: '5px', background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', borderColor: '#fca5a5' }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenDeleteCase(c);
+                                      }}
+                                      title="Eliminar este caso"
+                                    >
+                                      🗑️
+                                    </button>
+                                  </div>
+                                )}
+                                <span>Ver detalle ➜</span>
+                              </div>
+                            </div>
                           </div>
                         );
                       })
@@ -4415,27 +6512,40 @@ export default function App() {
               )}
 
             
-                          {/* FOOTER DISCRETO AL FINAL DEL SCROLL */}
+              {/* FOOTER OFICIAL CON IDENTIDAD D&NAX STUDIOS */}
               <footer style={{
                 marginTop: '36px',
-                padding: '18px 10px 10px 10px',
+                padding: '18px 12px 14px 12px',
                 textAlign: 'center',
                 borderTop: '1px solid var(--border-color)',
-                color: 'var(--text-subtle)',
-                fontSize: '0.74rem',
-                fontWeight: 500,
-                letterSpacing: '0.02em',
+                color: 'var(--text-muted)',
+                fontSize: '0.72rem',
                 userSelect: 'none',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                gap: '3px'
+                gap: '5px'
               }}>
-                <div style={{ color: 'var(--text-muted)', fontWeight: 600 }}>
-                  <strong>"Daniel Luna"</strong> Software, Web &amp; App Designer | &copy; 2026
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <svg viewBox="0 0 120 120" style={{ width: '22px', height: '22px', flexShrink: 0 }} xmlns="http://www.w3.org/2000/svg">
+                    <polygon points="60,8 105,32 105,88 60,112 15,88 15,32" fill="none" stroke="#6C4CE0" strokeWidth="4.5"/>
+                    <circle cx="60" cy="8" r="5" fill="#19C48A"/>
+                    <circle cx="105" cy="32" r="5" fill="#19C48A"/>
+                    <circle cx="105" cy="88" r="5" fill="#19C48A"/>
+                    <circle cx="60" cy="112" r="5" fill="#19C48A"/>
+                    <circle cx="15" cy="88" r="5" fill="#19C48A"/>
+                    <circle cx="15" cy="32" r="5" fill="#19C48A"/>
+                    <text x="60" y="69" textAnchor="middle" dominantBaseline="middle" fontFamily="'Outfit', system-ui, sans-serif" fontSize="28" fontWeight="800" fill="#6C4CE0">D&amp;N</text>
+                  </svg>
+                  <span style={{ fontWeight: 700, fontSize: '0.94rem', color: 'var(--text-main)', letterSpacing: '-0.01em' }}>
+                    D&amp;Nax <span style={{ color: '#19C48A' }}>Studios</span>
+                  </span>
                 </div>
-                <div style={{ fontSize: '0.68rem', opacity: 0.7 }}>
-                  ManteTiendas &bull; Sistema de Gestión de Mantenimientos
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                  Diseñado y Creado por <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>D&amp;Nax Studios</span> &bull; &copy; 2026
+                </div>
+                <div style={{ fontSize: '0.62rem', color: 'var(--text-subtle)', opacity: 0.65 }}>
+                  ManteTiendas &bull; Sistema Integral de Gestión de Mantenimientos
                 </div>
               </footer>
             </main>
@@ -4479,12 +6589,28 @@ export default function App() {
             ) : currentUser.rol === 'tecnico' ? (
               <button 
                 type="button"
-                className="mobile-nav-btn"
-                onClick={() => setShowNewTechCaseModal(true)}
-                style={{ color: 'var(--primary)', fontWeight: 800 }}
+                className={`mobile-nav-btn ${showTechTimbradorModal ? 'active' : ''}`}
+                onClick={() => setShowTechTimbradorModal(true)}
+                style={{ color: activePunchClock ? '#059669' : '#DC2626', fontWeight: 800 }}
               >
-                <span className="mobile-nav-icon" style={{ background: 'var(--primary)', color: '#fff', width: '28px', height: '28px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem' }}>+</span>
-                <span>Reportar</span>
+                <span 
+                  className="mobile-nav-icon" 
+                  style={{ 
+                    background: activePunchClock ? '#10B981' : '#EF4444', 
+                    color: '#fff', 
+                    width: '30px', 
+                    height: '30px', 
+                    borderRadius: '50%', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'center', 
+                    fontSize: '1rem',
+                    boxShadow: activePunchClock ? '0 0 10px rgba(16, 185, 129, 0.45)' : 'none'
+                  }}
+                >
+                  ⏱️
+                </span>
+                <span>{activePunchClock ? 'En Turno' : 'Timbrar'}</span>
               </button>
             ) : null}
 
@@ -4584,6 +6710,8 @@ export default function App() {
         stores={stores}
         categories={DEFAULT_CATEGORIES}
         users={users}
+        newCaseStoreId={newCaseStoreId}
+        setNewCaseStoreId={setNewCaseStoreId}
         newCategoryText={newCategoryText}
         handleCategoryChange={handleCategoryChange}
         newPriority={newPriority}
@@ -4609,6 +6737,10 @@ export default function App() {
         setNewPreMaterialName={setNewPreMaterialName}
         newPreMaterialQty={newPreMaterialQty}
         setNewPreMaterialQty={setNewPreMaterialQty}
+        newPreMaterialItems={newPreMaterialItems}
+        onAddPreMaterialItem={handleAddPreMaterialItem}
+        onRemovePreMaterialItem={handleRemovePreMaterialItem}
+        onUpdatePreMaterialItem={handleUpdatePreMaterialItem}
         onClose={() => setShowNewCaseModal(false)}
         onSubmit={handleCreateCase}
       />
@@ -4616,6 +6748,9 @@ export default function App() {
       <SolveModal
         show={showSolveModal}
         selectedCase={selectedCase}
+        currentUser={currentUser}
+        solutionDesc={solutionDesc}
+        setSolutionDesc={setSolutionDesc}
         solveEvidenceFiles={solveEvidenceFiles}
         handleSolveEvidenceChange={handleSolveEvidenceChange}
         setSolveEvidenceFiles={setSolveEvidenceFiles}
@@ -4746,6 +6881,21 @@ export default function App() {
 
       
 
+      <TechTimbradorModal
+        show={showTechTimbradorModal}
+        onClose={() => setShowTechTimbradorModal(false)}
+        currentUser={currentUser}
+        stores={stores}
+        categories={DEFAULT_CATEGORIES}
+        cases={cases}
+        activePunchClock={activePunchClock}
+        onClockIn={handleTechClockIn}
+        onClockOut={handleTechClockOut}
+        onOpenEditCase={handleOpenEditCase}
+        onOpenCaseDetail={setSelectedCaseId}
+        compressImage={compressImage}
+      />
+
       <NewTechCaseModal
         show={showNewTechCaseModal}
         currentUser={currentUser}
@@ -4759,6 +6909,30 @@ export default function App() {
         setTechCaseDesc={setTechCaseDesc}
         onClose={() => setShowNewTechCaseModal(false)}
         onSubmit={handleCreateTechCase}
+      />
+
+      <EditCaseModal
+        show={showEditCaseModal}
+        caseData={editingCase}
+        stores={stores}
+        categories={DEFAULT_CATEGORIES}
+        currentUser={currentUser}
+        onClose={() => {
+          setShowEditCaseModal(false);
+          setEditingCase(null);
+        }}
+        onSave={handleSaveEditCase}
+      />
+
+      <DeleteCaseModal
+        show={showDeleteCaseModal}
+        caseData={deletingCase}
+        stores={stores}
+        onClose={() => {
+          setShowDeleteCaseModal(false);
+          setDeletingCase(null);
+        }}
+        onConfirm={handleConfirmDeleteCase}
       />
     </div>
   );

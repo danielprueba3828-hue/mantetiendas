@@ -17,7 +17,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "VICKY MONTIEL",
     "supervisorApoyo": "LUIS VALLEJOS",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 3,
@@ -35,7 +35,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "MARFA TORRES",
     "supervisorApoyo": "JULIO TUBÓN",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 5,
@@ -53,7 +53,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "VICKY MONTIEL",
     "supervisorApoyo": "LUIS VALLEJOS",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 7,
@@ -71,7 +71,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "MARFA TORRES",
     "supervisorApoyo": "JULIO TUBÓN",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 9,
@@ -89,7 +89,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "VICKY MONTIEL",
     "supervisorApoyo": "LUIS VALLEJOS",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 11,
@@ -98,7 +98,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "independencia",
     "supervisorTurno": "MARFA TORRES",
     "supervisorApoyo": "JULIO TUBÓN",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 12,
@@ -116,7 +116,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "MARFA TORRES",
     "supervisorApoyo": "JULIO TUBÓN",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 14,
@@ -134,7 +134,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "VICKY MONTIEL",
     "supervisorApoyo": "LUIS VALLEJOS",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 16,
@@ -152,7 +152,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "MARFA TORRES",
     "supervisorApoyo": "JULIO TUBÓN",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 18,
@@ -170,7 +170,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "VICKY MONTIEL",
     "supervisorApoyo": "LUIS VALLEJOS",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 20,
@@ -197,7 +197,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "LUIS VALLEJOS",
     "supervisorApoyo": "VICKY MONTIEL",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 23,
@@ -215,7 +215,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "VICKY MONTIEL",
     "supervisorApoyo": "LUIS VALLEJOS",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 25,
@@ -224,7 +224,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "IND. CUENCA",
     "supervisorTurno": "MARFA TORRES",
     "supervisorApoyo": "JULIO TUBÓN",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 26,
@@ -251,7 +251,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "MARFA TORRES",
     "supervisorApoyo": "JULIO TUBÓN",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 29,
@@ -269,7 +269,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "VICKY MONTIEL",
     "supervisorApoyo": "LUIS VALLEJOS",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 31,
@@ -278,7 +278,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "FIESTAS DE QUITO",
     "supervisorTurno": "VICKY MONTIEL",
     "supervisorApoyo": "LUIS VALLEJOS",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 32,
@@ -296,7 +296,7 @@ export const DEFAULT_SHIFT_SCHEDULE: ShiftEntry[] = [
     "evento": "-",
     "supervisorTurno": "LUIS VALLEJOS",
     "supervisorApoyo": "VICKY MONTIEL",
-    "tecnicoGuardia": "FERNANDO S."
+    "tecnicoGuardia": "FRANCISCO S."
   },
   {
     "id": 34,
@@ -373,7 +373,7 @@ export const SUPERVISOR_BILLING_PROFILES: Record<string, SupervisorBillingProfil
 
 export const DEFAULT_TECH_AVAILABILITY: TechAvailabilityItem[] = [
   { id: 1, tecnicoNombre: 'Efrén U (Técnico Nivel 1)', horarioTrabajo: '08:00 AM - 05:00 PM', diasLibres: 'Domingo / Lunes', estatus: 'disponible', cobertura: 'Quito / Pichincha / Zona Norte' },
-  { id: 2, tecnicoNombre: 'Fernando S (Técnico Nivel 1)', horarioTrabajo: '08:00 AM - 05:00 PM', diasLibres: 'Sábado / Domingo', estatus: 'disponible', cobertura: 'Guayaquil / Guayas / Zona Sur' },
+  { id: 2, tecnicoNombre: 'Francisco S (Técnico Nivel 1)', horarioTrabajo: '08:00 AM - 05:00 PM', diasLibres: 'Sábado / Domingo', estatus: 'disponible', cobertura: 'Guayaquil / Guayas / Zona Sur' },
   { id: 3, tecnicoNombre: 'Luis Vallejos (Supervisor General)', horarioTrabajo: '07:30 AM - 05:30 PM', diasLibres: 'Fin de semana rotativo', estatus: 'disponible', cobertura: 'Nacional' },
   { id: 4, tecnicoNombre: 'Julio Tubón (Supervisor Técnico)', horarioTrabajo: '07:30 AM - 05:30 PM', diasLibres: 'Fin de semana rotativo', estatus: 'disponible', cobertura: 'Nacional' },
   { id: 5, tecnicoNombre: 'Vicky Montiel (Supervisora Operativa)', horarioTrabajo: '08:00 AM - 05:00 PM', diasLibres: 'Sábado / Domingo', estatus: 'disponible', cobertura: 'Nacional' },

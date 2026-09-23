@@ -145,5 +145,14 @@ ALTER TABLE casos ADD COLUMN IF NOT EXISTS horas_estimadas INTEGER DEFAULT 2;
 ALTER TABLE casos ADD COLUMN IF NOT EXISTS solicitud_material_anticipada BOOLEAN DEFAULT FALSE;
 ALTER TABLE casos ADD COLUMN IF NOT EXISTS material_anticipado_nombre TEXT;
 ALTER TABLE casos ADD COLUMN IF NOT EXISTS material_anticipado_cantidad INTEGER DEFAULT 1;
+ALTER TABLE casos ADD COLUMN IF NOT EXISTS material_anticipado_items JSONB;
 ALTER TABLE casos ADD COLUMN IF NOT EXISTS material_anticipado_estado VARCHAR(50);
 ALTER TABLE casos ADD COLUMN IF NOT EXISTS material_anticipado_aprobado_por VARCHAR(150);
+
+ALTER TABLE pedidos_materiales ADD COLUMN IF NOT EXISTS solicitado_por_id INT REFERENCES usuarios(id) ON DELETE SET NULL;
+ALTER TABLE pedidos_materiales ADD COLUMN IF NOT EXISTS solicitado_por_nombre VARCHAR(150);
+ALTER TABLE pedidos_materiales ADD COLUMN IF NOT EXISTS solicitado_por_rol VARCHAR(50);
+ALTER TABLE pedidos_materiales ADD COLUMN IF NOT EXISTS cantidad INT DEFAULT 1;
+ALTER TABLE pedidos_materiales ADD COLUMN IF NOT EXISTS material_nombre TEXT;
+ALTER TABLE pedidos_materiales ADD COLUMN IF NOT EXISTS tienda_id INT REFERENCES tiendas(id) ON DELETE SET NULL;
+

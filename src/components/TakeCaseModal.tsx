@@ -72,14 +72,51 @@ export const TakeCaseModal: React.FC<TakeCaseModalProps> = ({
 
           {takeCaseMode === 'equipo' && (
             <div>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px', color: 'var(--text-main)' }}>
-                Nombre del Técnico de Apoyo / Acompañante *
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '6px', color: 'var(--text-main)' }}>
+                Técnico de Apoyo / Acompañante *
               </label>
+
+              {/* Acceso Rápido a los Técnicos Oficiales */}
+              <div style={{ display: 'flex', gap: '6px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={() => setTakeCaseSupportTech('Francisco S (Técnico)')}
+                  style={{
+                    padding: '5px 10px',
+                    borderRadius: '6px',
+                    border: takeCaseSupportTech === 'Francisco S (Técnico)' ? '1.5px solid var(--primary)' : '1px solid var(--border-color)',
+                    background: takeCaseSupportTech === 'Francisco S (Técnico)' ? 'rgba(30, 58, 138, 0.12)' : 'var(--bg-surface)',
+                    color: takeCaseSupportTech === 'Francisco S (Técnico)' ? 'var(--primary)' : 'var(--text-main)',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  👷 Francisco S (Técnico)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTakeCaseSupportTech('Efrén U (Técnico)')}
+                  style={{
+                    padding: '5px 10px',
+                    borderRadius: '6px',
+                    border: takeCaseSupportTech === 'Efrén U (Técnico)' ? '1.5px solid var(--primary)' : '1px solid var(--border-color)',
+                    background: takeCaseSupportTech === 'Efrén U (Técnico)' ? 'rgba(30, 58, 138, 0.12)' : 'var(--bg-surface)',
+                    color: takeCaseSupportTech === 'Efrén U (Técnico)' ? 'var(--primary)' : 'var(--text-main)',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  👷 Efrén U (Técnico)
+                </button>
+              </div>
+
               <input
                 type="text"
                 value={takeCaseSupportTech}
                 onChange={e => setTakeCaseSupportTech(e.target.value)}
-                placeholder="Ej: Fernando S. o Técnico Externo..."
+                placeholder="Selecciona arriba o escribe nombre (ej: Francisco S o Proveedor Externo)..."
                 style={{ width: '100%', padding: '9px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-panel)', color: 'var(--text-main)', fontSize: '0.85rem', boxSizing: 'border-box' }}
               />
             </div>

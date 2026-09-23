@@ -31,6 +31,11 @@ interface AdminTabProps {
   setAdmRole: (val: 'administrador' | 'jefe_tienda' | 'subjefe' | 'supervisor' | 'tecnico') => void;
   admTiendaNombre: string;
   setAdmTiendaNombre: (val: string) => void;
+  admTiendaCiudad: string;
+  setAdmTiendaCiudad: (val: string) => void;
+  admIsNewStoreMode: boolean;
+  setAdmIsNewStoreMode: (val: boolean) => void;
+  isSubmittingAdminUser?: boolean;
   handleAdminUserSubmit: (e: React.FormEvent) => void;
   handleStartEditUser: (u: User) => void;
   handleCancelEditUser: () => void;
@@ -54,6 +59,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   setAdminSectionTab,
   showAdminUserForm,
   setShowAdminUserForm,
+  isSubmittingAdminUser,
   showAdminStoreForm,
   setShowAdminStoreForm,
   adminUserSearch,
@@ -79,6 +85,10 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   setAdmRole,
   admTiendaNombre,
   setAdmTiendaNombre,
+  admTiendaCiudad,
+  setAdmTiendaCiudad,
+  admIsNewStoreMode,
+  setAdmIsNewStoreMode,
   handleAdminUserSubmit,
   handleStartEditUser,
   handleCancelEditUser,
@@ -162,24 +172,24 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                if (showAdminUserForm) handleCancelEditUser();
-                setShowAdminUserForm(!showAdminUserForm);
+                handleCancelEditUser();
+                setShowAdminUserForm(true);
               }}
               style={{ fontWeight: 700, fontSize: '0.84rem', padding: '9px 18px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}
             >
-              {showAdminUserForm ? '✕ Cerrar Formulario' : '➕ Nuevo Usuario'}
+              ➕ Nuevo Usuario
             </button>
           ) : (
             <button
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                if (showAdminStoreForm) handleCancelEditStore();
-                setShowAdminStoreForm(!showAdminStoreForm);
+                handleCancelEditStore();
+                setShowAdminStoreForm(true);
               }}
               style={{ fontWeight: 700, fontSize: '0.84rem', padding: '9px 18px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}
             >
-              {showAdminStoreForm ? '✕ Cerrar Formulario' : '➕ Nueva Tienda'}
+              ➕ Nueva Tienda
             </button>
           )}
         </div>
@@ -233,98 +243,238 @@ export const AdminTab: React.FC<AdminTabProps> = ({
 
       {adminSectionTab === 'usuarios' ? (
         <div>
-          {/* Formulario de Usuario */}
+          {/* Modal Formulario de Usuario */}
           {showAdminUserForm && (
-            <div className="card animate-fade" style={{ marginBottom: '16px', padding: '16px', border: '1px solid var(--primary)', borderRadius: '14px' }}>
-              <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: 800 }}>
-                {editingUserId ? '✏️ Modificar Usuario' : '➕ Registrar Nuevo Usuario'}
-              </h3>
-              <form onSubmit={handleAdminUserSubmit} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Nombre Completo *</label>
-                  <input
-                    type="text"
-                    required
-                    value={admName}
-                    onChange={e => setAdmName(e.target.value)}
-                    placeholder="Ej: Juan Pérez"
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Correo Electrónico *</label>
-                  <input
-                    type="email"
-                    required
-                    value={admEmail}
-                    onChange={e => setAdmEmail(e.target.value)}
-                    placeholder="correo@ejemplo.com"
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Nombre de Usuario (Login) *</label>
-                  <input
-                    type="text"
-                    required
-                    value={admUsername}
-                    onChange={e => setAdmUsername(e.target.value)}
-                    placeholder="usuario123"
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>
-                    {editingUserId ? 'Nueva Contraseña (Opcional)' : 'Contraseña Inicial *'}
-                  </label>
-                  <input
-                    type="password"
-                    required={!editingUserId}
-                    value={admContrasena}
-                    onChange={e => setAdmContrasena(e.target.value)}
-                    placeholder={editingUserId ? 'Dejar en blanco para conservar' : 'Mínimo 6 caracteres'}
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Rol en el Sistema *</label>
-                  <select
-                    value={admRole}
-                    onChange={e => setAdmRole(e.target.value as any)}
-                    className="custom-select"
-                    style={{ width: '100%', fontSize: '0.84rem', padding: '8px 12px', borderRadius: '8px' }}
-                  >
-                    <option value="jefe_tienda">Tienda / Local</option>
-                    <option value="supervisor">Supervisor</option>
-                    <option value="tecnico">Técnico Operativo</option>
-                    <option value="administrador">Administrador</option>
-                  </select>
-                </div>
-
-                {(admRole === 'jefe_tienda' || admRole === 'subjefe') && (
+            <div 
+              className="modal-backdrop"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) handleCancelEditUser();
+              }}
+            >
+              <div className="modal-sheet animate-scale-up" style={{ maxWidth: '580px', maxHeight: '92vh', overflowY: 'auto' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Tienda Asignada *</label>
-                    <select
-                      value={admTiendaNombre}
-                      onChange={e => setAdmTiendaNombre(e.target.value)}
-                      className="custom-select"
-                      style={{ width: '100%', fontSize: '0.84rem', padding: '8px 12px', borderRadius: '8px' }}
-                    >
-                      <option value="">-- Seleccionar Tienda --</option>
-                      {stores.map(s => (
-                        <option key={s.id} value={s.nombre}>{s.nombre}</option>
-                      ))}
-                    </select>
+                    <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span>{editingUserId ? '✏️' : '➕'}</span>
+                      <span>{editingUserId ? 'Modificar Usuario' : 'Registrar Nuevo Usuario'}</span>
+                    </h3>
+                    <p style={{ margin: '4px 0 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      {editingUserId ? `Actualizar los accesos y credenciales de usuario` : 'Completa los campos para crear una nueva cuenta.'}
+                    </p>
                   </div>
-                )}
-
-                <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
-                  <button type="button" className="btn btn-secondary" onClick={handleCancelEditUser}>Cancelar</button>
-                  <button type="submit" className="btn btn-primary" style={{ fontWeight: 700 }}>
-                    {editingUserId ? '💾 Guardar Cambios' : '➕ Crear Usuario'}
+                  <button
+                    type="button"
+                    className="btn-icon"
+                    onClick={handleCancelEditUser}
+                    title="Cerrar"
+                    style={{ background: 'transparent', border: 'none', fontSize: '1.25rem', cursor: 'pointer', color: 'var(--text-muted)', padding: '4px 8px', borderRadius: '8px' }}
+                  >
+                    ✕
                   </button>
                 </div>
-              </form>
+
+                <form onSubmit={handleAdminUserSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '4px' }}>Nombre Completo *</label>
+                      <input
+                        type="text"
+                        required
+                        value={admName}
+                        onChange={e => setAdmName(e.target.value)}
+                        placeholder="Ej: Juan Pérez"
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '4px' }}>Correo Electrónico *</label>
+                      <input
+                        type="email"
+                        required
+                        value={admEmail}
+                        onChange={e => setAdmEmail(e.target.value)}
+                        placeholder="correo@ejemplo.com"
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '4px' }}>Nombre de Usuario (Login) *</label>
+                      <input
+                        type="text"
+                        required
+                        value={admUsername}
+                        onChange={e => setAdmUsername(e.target.value)}
+                        placeholder="usuario123"
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '4px' }}>
+                        {editingUserId ? 'Nueva Contraseña (Opcional)' : 'Contraseña Inicial *'}
+                      </label>
+                      <input
+                        type="password"
+                        required={!editingUserId}
+                        value={admContrasena}
+                        onChange={e => setAdmContrasena(e.target.value)}
+                        placeholder={editingUserId ? 'Dejar en blanco para conservar' : 'Mínimo 6 caracteres'}
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '4px' }}>Rol en el Sistema *</label>
+                      <select
+                        value={admRole}
+                        onChange={e => setAdmRole(e.target.value as any)}
+                        className="custom-select"
+                        style={{ width: '100%', fontSize: '0.86rem', padding: '10px 12px', borderRadius: '8px' }}
+                      >
+                        <option value="jefe_tienda">Tienda / Local</option>
+                        <option value="supervisor">Supervisor</option>
+                        <option value="tecnico">Técnico Operativo</option>
+                        <option value="administrador">Administrador</option>
+                      </select>
+                    </div>
+
+                    {(admRole === 'jefe_tienda' || admRole === 'subjefe') && (
+                      <div style={{ gridColumn: '1 / -1', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '14px', marginTop: '4px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+                          <div>
+                            <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px', margin: 0 }}>
+                              <span>🏬</span> {admIsNewStoreMode ? 'Nueva Tienda o Lugar de Trabajo *' : 'Tienda o Lugar de Trabajo *'}
+                            </label>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                              {admIsNewStoreMode ? 'Ingresa los datos para registrar y vincular este nuevo local o lugar de trabajo' : 'Selecciona una tienda existente de la red'}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', gap: '4px', background: 'var(--bg-surface)', padding: '3px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAdmIsNewStoreMode(true);
+                                if (admTiendaNombre && stores.some(s => s.nombre.toLowerCase().trim() === admTiendaNombre.toLowerCase().trim())) {
+                                  setAdmTiendaNombre('');
+                                }
+                              }}
+                              style={{
+                                padding: '5px 12px',
+                                borderRadius: '6px',
+                                border: 'none',
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                background: admIsNewStoreMode ? 'var(--primary)' : 'transparent',
+                                color: admIsNewStoreMode ? '#fff' : 'var(--text-muted)',
+                                transition: 'all 0.15s'
+                              }}
+                            >
+                              ➕ Nueva Tienda / Lugar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setAdmIsNewStoreMode(false)}
+                              style={{
+                                padding: '5px 12px',
+                                borderRadius: '6px',
+                                border: 'none',
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                background: !admIsNewStoreMode ? 'var(--primary)' : 'transparent',
+                                color: !admIsNewStoreMode ? '#fff' : 'var(--text-muted)',
+                                transition: 'all 0.15s'
+                              }}
+                            >
+                              🏢 Elegir Existente
+                            </button>
+                          </div>
+                        </div>
+
+                        {admIsNewStoreMode ? (
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                            <div>
+                              <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                Nombre de la Tienda / Lugar de Trabajo *
+                              </label>
+                              <input
+                                type="text"
+                                required={admIsNewStoreMode}
+                                value={admTiendaNombre}
+                                onChange={e => setAdmTiendaNombre(e.target.value)}
+                                placeholder="Ej: MARATHON MALL DEL NORTE o BODEGA SUR"
+                                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                Ciudad del Lugar de Trabajo *
+                              </label>
+                              <input
+                                type="text"
+                                required={admIsNewStoreMode}
+                                value={admTiendaCiudad}
+                                onChange={e => setAdmTiendaCiudad(e.target.value)}
+                                placeholder="Ej: Guayaquil, Quito, Cuenca, Manta..."
+                                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <select
+                              value={admTiendaNombre}
+                              onChange={e => {
+                                if (e.target.value === '__NEW__') {
+                                  setAdmIsNewStoreMode(true);
+                                  setAdmTiendaNombre('');
+                                } else {
+                                  setAdmTiendaNombre(e.target.value);
+                                }
+                              }}
+                              required={!admIsNewStoreMode}
+                              className="custom-select"
+                              style={{ width: '100%', fontSize: '0.86rem', padding: '10px 12px', borderRadius: '8px' }}
+                            >
+                              <option value="">-- Seleccionar Tienda / Local Existente --</option>
+                              <option value="__NEW__" style={{ fontWeight: 800, color: 'var(--primary)' }}>
+                                ➕ [Registrar Nueva Tienda o Lugar de Trabajo...]
+                              </option>
+                              {stores.map(s => (
+                                <option key={s.id} value={s.nombre}>{s.nombre} ({s.ciudad || 'Ecuador'})</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
+                    <button type="button" className="btn btn-secondary" onClick={handleCancelEditUser} disabled={isSubmittingAdminUser}>
+                      Cancelar
+                    </button>
+                    <button 
+                      type="submit" 
+                      className="btn btn-primary" 
+                      disabled={isSubmittingAdminUser}
+                      style={{ 
+                        fontWeight: 700, 
+                        minWidth: '150px',
+                        opacity: isSubmittingAdminUser ? 0.7 : 1,
+                        cursor: isSubmittingAdminUser ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      {isSubmittingAdminUser ? '⏳ Guardando...' : (editingUserId ? '💾 Guardar Cambios' : '➕ Crear Usuario')}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           )}
 
@@ -466,53 +616,83 @@ export const AdminTab: React.FC<AdminTabProps> = ({
       ) : (
         /* SECCIÓN GESTIÓN DE TIENDAS */
         <div>
-          {/* Formulario de Tienda */}
+          {/* Modal Formulario de Tienda */}
           {showAdminStoreForm && (
-            <div className="card animate-fade" style={{ marginBottom: '16px', padding: '16px', border: '1px solid var(--primary)', borderRadius: '14px' }}>
-              <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem', fontWeight: 800 }}>
-                {editingStoreId ? '✏️ Modificar Tienda' : '➕ Registrar Nueva Tienda'}
-              </h3>
-              <form onSubmit={handleAdminStoreSubmit} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Nombre de Tienda *</label>
-                  <input
-                    type="text"
-                    required
-                    value={newStoreName}
-                    onChange={e => setNewStoreName(e.target.value)}
-                    placeholder="Ej: MARATHON MALL DEL SOL"
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Ciudad *</label>
-                  <input
-                    type="text"
-                    required
-                    value={newStoreCity}
-                    onChange={e => setNewStoreCity(e.target.value)}
-                    placeholder="Ej: Guayaquil"
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 600, marginBottom: '4px' }}>Dirección</label>
-                  <input
-                    type="text"
-                    value={newStoreDir}
-                    onChange={e => setNewStoreDir(e.target.value)}
-                    placeholder="Ej: Av. Juan Tanca Marengo"
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.84rem', boxSizing: 'border-box' }}
-                  />
-                </div>
-
-                <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
-                  <button type="button" className="btn btn-secondary" onClick={handleCancelEditStore}>Cancelar</button>
-                  <button type="submit" className="btn btn-primary" style={{ fontWeight: 700 }}>
-                    {editingStoreId ? '💾 Guardar Cambios' : '➕ Crear Tienda'}
+            <div 
+              className="modal-backdrop"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) handleCancelEditStore();
+              }}
+            >
+              <div className="modal-sheet animate-scale-up" style={{ maxWidth: '520px', maxHeight: '92vh', overflowY: 'auto' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span>{editingStoreId ? '✏️' : '➕'}</span>
+                      <span>{editingStoreId ? 'Modificar Tienda' : 'Registrar Nueva Tienda'}</span>
+                    </h3>
+                    <p style={{ margin: '4px 0 0 0', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      {editingStoreId ? 'Editar información de la sucursal o local' : 'Ingresa los datos para registrar una nueva tienda en la red.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-icon"
+                    onClick={handleCancelEditStore}
+                    title="Cerrar"
+                    style={{ background: 'transparent', border: 'none', fontSize: '1.25rem', cursor: 'pointer', color: 'var(--text-muted)', padding: '4px 8px', borderRadius: '8px' }}
+                  >
+                    ✕
                   </button>
                 </div>
-              </form>
+
+                <form onSubmit={handleAdminStoreSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '4px' }}>Nombre de Tienda *</label>
+                    <input
+                      type="text"
+                      required
+                      value={newStoreName}
+                      onChange={e => setNewStoreName(e.target.value)}
+                      placeholder="Ej: MARATHON MALL DEL SOL"
+                      style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '4px' }}>Ciudad *</label>
+                      <input
+                        type="text"
+                        required
+                        value={newStoreCity}
+                        onChange={e => setNewStoreCity(e.target.value)}
+                        placeholder="Ej: Guayaquil"
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, marginBottom: '4px' }}>Dirección</label>
+                      <input
+                        type="text"
+                        value={newStoreDir}
+                        onChange={e => setNewStoreDir(e.target.value)}
+                        placeholder="Ej: Av. Juan Tanca Marengo"
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)', fontSize: '0.86rem', boxSizing: 'border-box' }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
+                    <button type="button" className="btn btn-secondary" onClick={handleCancelEditStore}>
+                      Cancelar
+                    </button>
+                    <button type="submit" className="btn btn-primary" style={{ fontWeight: 700, minWidth: '150px' }}>
+                      {editingStoreId ? '💾 Guardar Cambios' : '➕ Crear Tienda'}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           )}
 

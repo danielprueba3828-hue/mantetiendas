@@ -147,7 +147,7 @@ export const DEFAULT_USERS: User[] = [
   },
   {
     "id": 7,
-    "nombre": "Fernando S (Técnico)",
+    "nombre": "Francisco S (Técnico)",
     "correo": "tec_fs@marathonsports.com",
     "usuario": "TEC_FS",
     "contrasena": "TEC*FS*",

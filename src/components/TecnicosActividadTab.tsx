@@ -47,7 +47,7 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
   const tecnicosEnTiendaCount = activeCases.filter(c => c.hora_entrada && !c.hora_salida).length;
 
   const filteredCases = activeCases.filter(c => {
-    if (techActivityStoreFilter !== 'todas' && c.tiendaId !== techActivityStoreFilter) return false;
+    if (techActivityStoreFilter !== 'todas' && String(c.tiendaId) !== String(techActivityStoreFilter)) return false;
     if (techActivityTechFilter !== 'todos') {
       const tech = users.find(u => u.id === techActivityTechFilter);
       const isAssigned = c.tecnicoAsignadoId === techActivityTechFilter;
