@@ -1692,3 +1692,159 @@ html, body {
     flex: 1;
   }
 }
+
+/* ==========================================================================
+   TÉCNICOS: TARJETA ACTIVA Y BARRA FLOTANTE MÓVIL
+   ========================================================================== */
+.ticket-card-active-tech {
+  border: 2px solid #10B981 !important;
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.05) 0%, rgba(16, 185, 129, 0.01) 100%) !important;
+  box-shadow: 0 4px 20px -4px rgba(16, 185, 129, 0.25), 0 0 0 1px rgba(16, 185, 129, 0.2) !important;
+  position: relative;
+}
+
+.ticket-card-active-tech::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  background: #10B981;
+  border-top-left-radius: var(--radius-lg);
+  border-bottom-left-radius: var(--radius-lg);
+}
+
+/* Floating reminder on mobile when technician has an active case */
+.mobile-active-case-float {
+  position: fixed;
+  bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+  left: 12px;
+  right: 12px;
+  z-index: 100;
+  animation: slideUpFloat 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: auto;
+}
+
+@keyframes slideUpFloat {
+  from {
+    transform: translate3d(0, 30px, 0);
+    opacity: 0;
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
+  }
+}
+
+.mobile-active-case-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #0f172a;
+  border: 1.5px solid #10B981;
+  border-radius: 16px;
+  box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.5), 0 0 15px rgba(16, 185, 129, 0.35);
+  cursor: pointer;
+  will-change: transform;
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.mobile-active-case-content:active {
+  transform: scale3d(0.98, 0.98, 1);
+}
+
+.mobile-active-case-pulse {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #10B981;
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  animation: casePulse 1.8s infinite;
+  flex-shrink: 0;
+}
+
+@keyframes casePulse {
+  0% {
+    transform: scale3d(0.95, 0.95, 1);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  }
+  70% {
+    transform: scale3d(1, 1, 1);
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+  }
+  100% {
+    transform: scale3d(0.95, 0.95, 1);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.mobile-active-case-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.mobile-active-case-label {
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #34D399;
+  line-height: 1.2;
+}
+
+.mobile-active-case-name {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #FFFFFF;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.mobile-active-case-action-btn {
+  background: #10B981;
+  color: #FFFFFF;
+  border: none;
+  border-radius: 10px;
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.mobile-active-case-action-btn:active {
+  transform: scale3d(0.94, 0.94, 1);
+  background: #059669;
+}
+
+/* ==========================================================================
+   MOBILE ERGONOMICS & ZERO-JANK MOTION
+   ========================================================================== */
+@media (max-width: 768px) {
+  /* Generous touch targets */
+  .btn, .mobile-nav-btn, .tab-btn, .search-input, .filter-select {
+    min-height: 44px;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .ticket-card {
+    will-change: transform;
+    transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.15s ease;
+  }
+
+  .ticket-card:active {
+    transform: scale3d(0.985, 0.985, 1);
+  }
+
+  /* Safe padding for bottom navigation */
+  .main-content {
+    padding-bottom: calc(85px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+}

@@ -139,3 +139,31 @@ export const getStoresForSupervisor = (supKey: string, storesList: Store[], user
     return false;
   });
 };
+
+export const encodeGpsInFilename = (
+  filename: string,
+  coords?: { latitude: number; longitude: number; accuracy?: number } | null
+): string => {
+  if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+    return filename;
+  }
+  const cleanName = filename.replace(/^GPS_[^_-]+_[^_-]+_[^_-]+_/, '');
+  const acc = Math.round(coords.accuracy || 0);
+  return `GPS_${coords.latitude}_${coords.longitude}_${acc}_${cleanName}`;
+};
+
+export const parseGpsFromFilename = (
+  filename?: string
+): { latitude: number; longitude: number; accuracy?: number } | undefined => {
+  if (!filename || !filename.startsWith('GPS_')) return undefined;
+  const parts = filename.split('_');
+  if (parts.length >= 4) {
+    const lat = parseFloat(parts[1]);
+    const lng = parseFloat(parts[2]);
+    const acc = parseFloat(parts[3]);
+    if (!isNaN(lat) && !isNaN(lng)) {
+      return { latitude: lat, longitude: lng, accuracy: !isNaN(acc) && acc > 0 ? acc : undefined };
+    }
+  }
+  return undefined;
+};

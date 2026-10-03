@@ -66,10 +66,13 @@ export const FacturacionModal: React.FC<FacturacionModalProps> = ({
     }
   }, [facturacionCasoId]);
 
+  const safeCases = Array.isArray(cases) ? cases : [];
+  const safeStores = Array.isArray(stores) ? stores : [];
+
   if (!show) return null;
 
-  const currentCase = cases.find(c => c.id === (selectedCaseId || facturacionCasoId));
-  const currentStore = currentCase ? stores.find(s => s.id === currentCase.tiendaId) : null;
+  const currentCase = safeCases.find(c => c && c.id === (selectedCaseId || facturacionCasoId));
+  const currentStore = currentCase ? safeStores.find(s => s && s.id === currentCase.tiendaId) : null;
   const supervisorName = currentStore?.supervisorName || (currentUser?.rol === 'supervisor' ? currentUser.nombre : 'No asignado');
 
   const handleSaveToProfile = () => {
@@ -187,8 +190,8 @@ export const FacturacionModal: React.FC<FacturacionModalProps> = ({
               style={{ width: '100%', padding: '8px 12px', fontSize: '0.84rem', borderRadius: '8px' }}
             >
               <option value="">-- Sin Caso Específico / General --</option>
-              {cases.filter(c => c.estado !== 'cerrado' && c.estado !== 'concluido').map(c => {
-                const s = stores.find(st => st.id === c.tiendaId);
+              {safeCases.filter(c => c && c.estado !== 'cerrado' && c.estado !== 'concluido').map(c => {
+                const s = safeStores.find(st => st && st.id === c.tiendaId);
                 return (
                   <option key={c.id} value={c.id}>
                     Caso #{c.id} - {s ? `${s.nombre} (Sup: ${s.supervisorName || 'No asignado'})` : `Tienda #${c.tiendaId}`} ({c.categoria})

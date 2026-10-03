@@ -35,8 +35,10 @@ export const EditableCategorySelect: React.FC<EditableCategorySelectProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const filteredCategories = categories.filter(c =>
-    c.nombre.toLowerCase().includes((value || '').toLowerCase().trim())
+  const safeCategories = Array.isArray(categories) ? categories : [];
+  const queryStr = (value || '').toLowerCase().trim();
+  const filteredCategories = safeCategories.filter(c =>
+    c && (c.nombre || '').toLowerCase().includes(queryStr)
   );
 
   return (

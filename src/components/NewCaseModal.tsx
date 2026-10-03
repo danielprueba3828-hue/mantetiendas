@@ -2,6 +2,8 @@ import React from 'react';
 import type { Store, User } from '../types';
 import { SearchableStoreSelect } from './SearchableStoreSelect';
 import { EditableCategorySelect } from './EditableCategorySelect';
+import { GpsCameraCapture } from './GpsCameraCapture';
+import { appStatePersistence } from '../services/appStatePersistence';
 
 interface NewCaseModalProps {
   show: boolean;
@@ -84,10 +86,51 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
   onClose,
   onSubmit
 }) => {
+  // Restaurar borrador si el usuario cambió de app
+  React.useEffect(() => {
+    if (show) {
+      const draft = appStatePersistence.getNewCaseDraft();
+      if (draft) {
+        if (setNewCaseStoreId && !newCaseStoreId && draft.storeId) setNewCaseStoreId(draft.storeId);
+        if (!newCategoryText && draft.category) handleCategoryChange(draft.category);
+        if (!newPriority && draft.priority) setNewPriority(draft.priority);
+        if (!newDesc && draft.description) setNewDesc(draft.description);
+      }
+    }
+  }, [show]);
+
+  // Guardar borrador automáticamente al escribir
+  React.useEffect(() => {
+    if (show) {
+      appStatePersistence.saveNewCaseDraft({
+        storeId: newCaseStoreId || currentUser?.tiendaId || 0,
+        category: newCategoryText,
+        priority: newPriority,
+        description: newDesc,
+        isScheduled: newIsScheduled,
+        scheduleDate: newScheduleDate,
+        scheduleShift: newScheduleShift
+      });
+    }
+  }, [show, newCaseStoreId, newCategoryText, newPriority, newDesc, newIsScheduled, newScheduleDate, newScheduleShift]);
+
   if (!show) return null;
 
+  const safeStores = Array.isArray(stores) ? stores : [];
+  const safeUsers = Array.isArray(users) ? users : [];
+
   const isStoreUser = currentUser?.rol === 'jefe_tienda' || currentUser?.rol === 'subjefe';
-  const currentStore = stores.find(s => s.id === (isStoreUser ? currentUser?.tiendaId : (newCaseStoreId || currentUser?.tiendaId)));
+  const currentStore = safeStores.find(s => s && s.id === (isStoreUser ? currentUser?.tiendaId : (newCaseStoreId || currentUser?.tiendaId)));
+
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (currentUser?.rol === 'tecnico' && newCaseDamagePhotos.length === 0) {
+      alert("Como técnico, es obligatorio capturar una fotografía con coordenadas GPS antes de crear el caso.");
+      return;
+    }
+    appStatePersistence.clearNewCaseDraft();
+    onSubmit(e);
+  };
 
   return (
     <div className="modal-backdrop">
@@ -106,7 +149,7 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={onSubmit} style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <form onSubmit={handleFormSubmit} style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
           {/* Tienda Asignada */}
           <div>
             <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>Tienda Asignada *</label>
@@ -172,40 +215,55 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
           </div>
 
           {/* Evidencias de Daño Inicial */}
-          <div>
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>
-              📷 Fotos de Evidencia del Daño Inicial (Opcional - Máx 5)
-            </label>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-              {newCaseDamagePhotos.map((photo, i) => (
-                <div key={i} style={{ position: 'relative', width: '56px', height: '56px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
-                  <img src={photo} alt="Evidencia inicial" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  <button
-                    type="button"
-                    onClick={() => setNewCaseDamagePhotos(prev => prev.filter((_, idx) => idx !== i))}
-                    style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', borderRadius: '50%', width: '18px', height: '18px', fontSize: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-              {newCaseDamagePhotos.length < 5 && (
-                <label 
-                  className="btn btn-secondary btn-sm" 
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer', padding: '6px 12px', fontSize: '0.78rem' }}
-                >
-                  📸 Adjuntar Fotos ({newCaseDamagePhotos.length}/5)
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    style={{ display: 'none' }}
-                    onChange={handleNewCasePhotoChange}
-                  />
-                </label>
-              )}
+          {currentUser?.rol === 'tecnico' ? (
+            <div>
+              <GpsCameraCapture
+                photoUrl={newCaseDamagePhotos[0] || null}
+                onPhotoCaptured={(watermarked) => setNewCaseDamagePhotos([watermarked])}
+                onPhotoRemoved={() => setNewCaseDamagePhotos([])}
+                techName={currentUser?.nombre || 'Técnico'}
+                storeName={stores.find(s => s.id === newCaseStoreId)?.nombre}
+                actionTitle="Creación de Caso de Mantenimiento"
+                required={true}
+                label="📸 Foto Inicial con Coordenadas GPS (Obligatorio para Técnicos)"
+              />
             </div>
-          </div>
+          ) : (
+            <div>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBottom: '4px' }}>
+                📷 Fotos de Evidencia del Daño Inicial (Opcional - Máx 5)
+              </label>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                {newCaseDamagePhotos.map((photo, i) => (
+                  <div key={i} style={{ position: 'relative', width: '56px', height: '56px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                    <img src={photo} alt="Evidencia inicial" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <button
+                      type="button"
+                      onClick={() => setNewCaseDamagePhotos(prev => prev.filter((_, idx) => idx !== i))}
+                      style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', borderRadius: '50%', width: '18px', height: '18px', fontSize: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                {newCaseDamagePhotos.length < 5 && (
+                  <label 
+                    className="btn btn-secondary btn-sm" 
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer', padding: '6px 12px', fontSize: '0.78rem' }}
+                  >
+                    📸 Adjuntar Fotos ({newCaseDamagePhotos.length}/5)
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      style={{ display: 'none' }}
+                      onChange={handleNewCasePhotoChange}
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Opciones Avanzadas: Programación y Materiales */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', background: 'var(--bg-surface)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
@@ -263,7 +321,7 @@ export const NewCaseModal: React.FC<NewCaseModalProps> = ({
                     style={{ width: '100%', fontSize: '0.78rem', padding: '6px' }}
                   >
                     <option value="">-- Sin asignar --</option>
-                    {users.filter(u => u.rol === 'tecnico' && u.estado).map(u => (
+                    {safeUsers.filter(u => u && u.rol === 'tecnico' && u.estado).map(u => (
                       <option key={u.id} value={u.id}>{u.nombre}</option>
                     ))}
                   </select>

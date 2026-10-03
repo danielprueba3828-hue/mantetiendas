@@ -45,8 +45,21 @@ export const TechTimbradorBanner: React.FC<TechTimbradorBannerProps> = ({
     return () => clearInterval(interval);
   }, [activePunchClock]);
 
-  const activeStore = activePunchClock ? stores.find(s => s.id === activePunchClock.tiendaId) : null;
-  const activeCase = activePunchClock ? cases.find(c => c.id === activePunchClock.casoId) : null;
+  const safeStores = Array.isArray(stores) ? stores.filter(s => s && s.id != null) : [];
+  const safeCases = Array.isArray(cases) ? cases.filter(c => c && c.id != null) : [];
+
+  const activeStore = activePunchClock ? safeStores.find(s => s.id === activePunchClock.tiendaId) || null : null;
+  const activeCase = activePunchClock ? safeCases.find(c => c.id === activePunchClock.casoId) || null : null;
+
+  const formatSafeTime = (val?: string) => {
+    if (!val) return '--:--';
+    try {
+      const d = new Date(val);
+      return isNaN(d.getTime()) ? '--:--' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '--:--';
+    }
+  };
 
   return (
     <div style={{ marginBottom: '16px' }}>
@@ -163,7 +176,7 @@ export const TechTimbradorBanner: React.FC<TechTimbradorBannerProps> = ({
                     En Turno Activo
                   </span>
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                    • Ingreso: {new Date(activePunchClock.horaIngreso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    • Ingreso: {formatSafeTime(activePunchClock.horaIngreso)}
                   </span>
                 </div>
                 <div style={{ fontSize: '0.96rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>

@@ -31,6 +31,7 @@ dist-ssr
 .testsprite/
 testsprite-plans/
 *.apk
+!public/ManteTiendas.apk
 *.docx
 temp_*
 *.mjs

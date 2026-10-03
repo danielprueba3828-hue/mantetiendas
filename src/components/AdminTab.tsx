@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Store, User } from '../types';
+import { dbOptimizer } from '../services/dbOptimization';
 
 interface AdminTabProps {
   adminSectionTab: 'usuarios' | 'tiendas';
@@ -106,7 +107,10 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   handleCancelEditStore,
   handleAdminDeleteStore
 }) => {
-  const filteredUsers = users.filter(u => {
+  const safeUsers = Array.isArray(users) ? users.filter(u => u && u.id != null) : [];
+  const safeStores = Array.isArray(stores) ? stores.filter(s => s && s.id != null) : [];
+
+  const filteredUsers = safeUsers.filter(u => {
     if (adminRoleFilter !== 'todos') {
       if (adminRoleFilter === 'jefe_tienda') {
         if (u.rol !== 'jefe_tienda' && u.rol !== 'subjefe') return false;
@@ -115,7 +119,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
       }
     }
     if (adminSupervisorFilter !== 'todos') {
-      const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
+      const supObj = safeUsers.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
       if (supObj) {
         if (u.rol === 'supervisor' && u.nombre !== adminSupervisorFilter) return false;
         const assignedIds = supObj.supervisorTiendas || [];
@@ -125,20 +129,20 @@ export const AdminTab: React.FC<AdminTabProps> = ({
     if (adminUserSearch.trim()) {
       const q = adminUserSearch.toLowerCase();
       return (
-        u.nombre.toLowerCase().includes(q) ||
-        u.usuario.toLowerCase().includes(q) ||
-        u.correo.toLowerCase().includes(q)
+        (u.nombre || '').toLowerCase().includes(q) ||
+        (u.usuario || '').toLowerCase().includes(q) ||
+        (u.correo || '').toLowerCase().includes(q)
       );
     }
     return true;
   });
 
-  const filteredStores = stores.filter(s => {
+  const filteredStores = safeStores.filter(s => {
     if (adminSupervisorFilter !== 'todos') {
-      const supObj = users.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
+      const supObj = safeUsers.find(sup => sup.rol === 'supervisor' && sup.nombre === adminSupervisorFilter);
       if (supObj) {
         const assignedIds = supObj.supervisorTiendas || [];
-        const isByName = s.supervisorName && s.supervisorName.toLowerCase().trim() === supObj.nombre.toLowerCase().trim();
+        const isByName = s.supervisorName && s.supervisorName.toLowerCase().trim() === (supObj.nombre || '').toLowerCase().trim();
         if (!assignedIds.includes(s.id) && !isByName) return false;
       }
     }
@@ -195,23 +199,73 @@ export const AdminTab: React.FC<AdminTabProps> = ({
         </div>
       </div>
 
+      {/* Panel de Ahorro y Optimización de Base de Datos */}
+      <div style={{
+        background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(59, 130, 246, 0.04))',
+        border: '1px solid rgba(16, 185, 129, 0.25)',
+        borderRadius: '12px',
+        padding: '12px 16px',
+        marginBottom: '16px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '10px'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '1.4rem' }}>⚡</span>
+          <div>
+            <div style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span>Optimizador de Gastos de BD Activo</span>
+              <span style={{ background: '#10b981', color: '#fff', fontSize: '0.62rem', fontWeight: 800, padding: '2px 6px', borderRadius: '4px' }}>
+                SWR + L1/L2
+              </span>
+            </div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+              Consultas BD Ahorradas: <strong style={{ color: '#10b981' }}>{dbOptimizer.getStats().queriesIntercepted}</strong> • Egress Preservado: <strong style={{ color: '#38bdf8' }}>~{Math.round(dbOptimizer.getStats().bytesSavedEstimatedKb)} KB</strong> • Canales Realtime: <strong style={{ color: '#a78bfa' }}>Estabilizados</strong>
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            dbOptimizer.clearAll();
+            window.location.reload();
+          }}
+          title="Fuerza la recarga limpia de todos los catálogos"
+          style={{
+            background: 'var(--bg-panel)',
+            border: '1px solid var(--border-color)',
+            color: 'var(--text-main)',
+            padding: '5px 12px',
+            borderRadius: '8px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
+            cursor: 'pointer'
+          }}
+        >
+          🔄 Revalidar Caché
+        </button>
+      </div>
+
       {/* 4 Metric Stat Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '16px' }}>
         <div className="detail-card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '2px', borderLeft: '4px solid #1e40af', background: 'var(--bg-card)', borderRadius: '12px', boxShadow: 'var(--shadow-sm)' }}>
           <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Total Usuarios</span>
-          <strong style={{ fontSize: '1.3rem', color: 'var(--text-main)', fontFamily: 'Outfit, sans-serif' }}>{users.length}</strong>
+          <strong style={{ fontSize: '1.3rem', color: 'var(--text-main)', fontFamily: 'Outfit, sans-serif' }}>{safeUsers.length}</strong>
         </div>
         <div className="detail-card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '2px', borderLeft: '4px solid #3b82f6', background: 'var(--bg-card)', borderRadius: '12px', boxShadow: 'var(--shadow-sm)' }}>
           <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Supervisores</span>
-          <strong style={{ fontSize: '1.3rem', color: '#3b82f6', fontFamily: 'Outfit, sans-serif' }}>{users.filter(u => u.rol === 'supervisor').length}</strong>
+          <strong style={{ fontSize: '1.3rem', color: '#3b82f6', fontFamily: 'Outfit, sans-serif' }}>{safeUsers.filter(u => u.rol === 'supervisor').length}</strong>
         </div>
         <div className="detail-card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '2px', borderLeft: '4px solid #10b981', background: 'var(--bg-card)', borderRadius: '12px', boxShadow: 'var(--shadow-sm)' }}>
           <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Técnicos</span>
-          <strong style={{ fontSize: '1.3rem', color: '#10b981', fontFamily: 'Outfit, sans-serif' }}>{users.filter(u => u.rol === 'tecnico').length}</strong>
+          <strong style={{ fontSize: '1.3rem', color: '#10b981', fontFamily: 'Outfit, sans-serif' }}>{safeUsers.filter(u => u.rol === 'tecnico').length}</strong>
         </div>
         <div className="detail-card" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '2px', borderLeft: '4px solid #f59e0b', background: 'var(--bg-card)', borderRadius: '12px', boxShadow: 'var(--shadow-sm)' }}>
           <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>Tiendas de la Red</span>
-          <strong style={{ fontSize: '1.3rem', color: '#f59e0b', fontFamily: 'Outfit, sans-serif' }}>{stores.length}</strong>
+          <strong style={{ fontSize: '1.3rem', color: '#f59e0b', fontFamily: 'Outfit, sans-serif' }}>{safeStores.length}</strong>
         </div>
       </div>
 
@@ -495,7 +549,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               onClick={() => setAdminRoleFilter('supervisor')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'supervisor' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'supervisor' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
             >
-              👔 Supervisores <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.filter(u => u.rol === 'supervisor').length}</span>
+              👔 Supervisores <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{safeUsers.filter(u => u.rol === 'supervisor').length}</span>
             </button>
             <button
               type="button"
@@ -503,7 +557,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               onClick={() => setAdminRoleFilter('tecnico')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'tecnico' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'tecnico' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
             >
-              👷 Técnicos <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.filter(u => u.rol === 'tecnico').length}</span>
+              👷 Técnicos <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{safeUsers.filter(u => u.rol === 'tecnico').length}</span>
             </button>
             <button
               type="button"
@@ -511,7 +565,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               onClick={() => setAdminRoleFilter('jefe_tienda')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'jefe_tienda' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'jefe_tienda' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
             >
-              🏬 Tiendas / Locales <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.filter(u => u.rol === 'jefe_tienda' || u.rol === 'subjefe').length}</span>
+              🏬 Tiendas / Locales <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{safeUsers.filter(u => u.rol === 'jefe_tienda' || u.rol === 'subjefe').length}</span>
             </button>
             <button
               type="button"
@@ -519,7 +573,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               onClick={() => setAdminRoleFilter('administrador')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminRoleFilter === 'administrador' ? '#1e40af' : 'var(--bg-card)', color: adminRoleFilter === 'administrador' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
             >
-              🛡️ Admin <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{users.filter(u => u.rol === 'administrador').length}</span>
+              🛡️ Admin <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{safeUsers.filter(u => u.rol === 'administrador').length}</span>
             </button>
           </div>
 
@@ -705,10 +759,10 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               onClick={() => setAdminSupervisorFilter('todos')}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid var(--border-color)', background: adminSupervisorFilter === 'todos' ? '#1e40af' : 'var(--bg-card)', color: adminSupervisorFilter === 'todos' ? '#ffffff' : 'var(--text-main)', cursor: 'pointer', transition: 'all 0.15s' }}
             >
-              Todas las Tiendas <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{stores.length}</span>
+              Todas las Tiendas <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>{safeStores.length}</span>
             </button>
-            {users.filter(u => u.rol === 'supervisor' && u.estado).map(sup => {
-              const assignedCount = sup.supervisorTiendas ? sup.supervisorTiendas.length : stores.filter(s => s.supervisorName && s.supervisorName.toLowerCase().trim() === sup.nombre.toLowerCase().trim()).length;
+            {safeUsers.filter(u => u.rol === 'supervisor' && u.estado).map(sup => {
+              const assignedCount = sup.supervisorTiendas ? sup.supervisorTiendas.length : safeStores.filter(s => s.supervisorName && s.supervisorName.toLowerCase().trim() === sup.nombre.toLowerCase().trim()).length;
               const isActive = adminSupervisorFilter === sup.nombre;
               return (
                 <button

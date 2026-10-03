@@ -18,15 +18,18 @@ export const AgendaTurnosTab: React.FC<AgendaTurnosTabProps> = ({
   setScheduleSearchQuery,
   loadSheetJS
 }) => {
+  const safeShiftSchedule = Array.isArray(shiftSchedule) ? shiftSchedule : [];
+
   const availableMonths = React.useMemo(() => {
     const set = new Set<string>();
-    shiftSchedule.forEach(s => {
-      if (s.mes) set.add(s.mes.trim());
+    safeShiftSchedule.forEach(s => {
+      if (s && s.mes) set.add(s.mes.trim());
     });
     return Array.from(set);
-  }, [shiftSchedule]);
+  }, [safeShiftSchedule]);
 
-  const filteredSchedule = shiftSchedule.filter(s => {
+  const filteredSchedule = safeShiftSchedule.filter(s => {
+    if (!s) return false;
     if (scheduleMonthFilter !== 'todos' && s.mes.toUpperCase() !== scheduleMonthFilter.toUpperCase()) return false;
     if (scheduleSearchQuery.trim()) {
       const q = scheduleSearchQuery.toLowerCase();

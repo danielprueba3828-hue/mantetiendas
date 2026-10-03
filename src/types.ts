@@ -69,10 +69,15 @@ export interface Comment {
 export interface Evidence {
   id: number;
   subidoPor: string;
-  tipo: 'inicial' | 'final';
+  tipo: 'inicial' | 'final' | 'foto_ingreso_gps' | 'foto_salida_gps' | string;
   archivoUrl: string;
   nombreArchivo: string;
   fecha: string;
+  coordenadas?: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+  };
 }
 
 export interface HistoryLog {
@@ -94,6 +99,8 @@ export interface JornadaAsistencia {
   tipoSalida?: 'pausa_material' | 'salida_temporal' | 'conclusion_final' | 'reapertura';
   registradoEntradaPor: string;
   registradoSalidaPor?: string;
+  gpsEntrada?: { latitude: number; longitude: number; accuracy?: number };
+  gpsSalida?: { latitude: number; longitude: number; accuracy?: number };
 }
 
 export interface Case {
@@ -134,6 +141,10 @@ export interface Case {
   material_anticipado_items?: CasePreMaterialItem[];
   material_anticipado_estado?: 'pendiente_aprobacion' | 'aprobado' | 'rechazado';
   material_anticipado_aprobado_por?: string;
+  gps_latitud_entrada?: number;
+  gps_longitud_entrada?: number;
+  gps_latitud_salida?: number;
+  gps_longitud_salida?: number;
 }
 
 export interface CasePreMaterialItem {

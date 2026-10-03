@@ -23,6 +23,9 @@ public class MainActivity extends BridgeActivity {
             settings.setDomStorageEnabled(true);
             settings.setDatabaseEnabled(true);
             settings.setMediaPlaybackRequiresUserGesture(false);
+            settings.setGeolocationEnabled(true);
+            settings.setAllowFileAccess(true);
+            settings.setAllowContentAccess(true);
         }
 
         // Solicitar exclusion de optimizacion agresiva de bateria para mantener WebSockets

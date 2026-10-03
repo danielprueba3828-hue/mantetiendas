@@ -13,6 +13,7 @@ interface TecnicosActividadTabProps {
   cases: Case[];
   setSelectedCaseId: (id: number) => void;
   setShowNewTechCaseModal?: (val: boolean) => void;
+  onAttemptNewCase?: () => void;
 }
 
 export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
@@ -25,8 +26,13 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
   stores,
   cases,
   setSelectedCaseId,
-  setShowNewTechCaseModal
+  setShowNewTechCaseModal,
+  onAttemptNewCase
 }) => {
+  const safeCases = Array.isArray(cases) ? cases : [];
+  const safeStores = Array.isArray(stores) ? stores : [];
+  const safeUsers = Array.isArray(users) ? users : [];
+
   const isStoreVisible = (tiendaId: number) => {
     if (!currentUser) return false;
     if (currentUser.rol === 'administrador' || currentUser.rol === 'tecnico') return true;
@@ -37,7 +43,8 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
     return currentUser.tiendaId === tiendaId;
   };
 
-  const activeCases = cases.filter(c => {
+  const activeCases = safeCases.filter(c => {
+    if (!c) return false;
     if (!isStoreVisible(c.tiendaId)) return false;
     if (c.estado === 'concluido' || c.estado === 'cerrado' || c.hora_salida) return false;
     return c.es_caso_tecnico || c.tecnicoAsignadoId || c.tecnico_presencial_nombre || c.hora_entrada || c.estado === 'en_proceso';
@@ -47,9 +54,10 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
   const tecnicosEnTiendaCount = activeCases.filter(c => c.hora_entrada && !c.hora_salida).length;
 
   const filteredCases = activeCases.filter(c => {
+    if (!c) return false;
     if (techActivityStoreFilter !== 'todas' && String(c.tiendaId) !== String(techActivityStoreFilter)) return false;
     if (techActivityTechFilter !== 'todos') {
-      const tech = users.find(u => u.id === techActivityTechFilter);
+      const tech = safeUsers.find(u => u && u.id === techActivityTechFilter);
       const isAssigned = c.tecnicoAsignadoId === techActivityTechFilter;
       const isPresencial = tech && c.tecnico_presencial_nombre?.toLowerCase().includes(tech.nombre.toLowerCase());
       const isApoyo = tech && c.tecnico_apoyo_nombre?.toLowerCase().includes(tech.nombre.toLowerCase());
@@ -71,11 +79,11 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
           </p>
         </div>
 
-        {currentUser?.rol === 'tecnico' && setShowNewTechCaseModal && (
+        {currentUser?.rol === 'tecnico' && (setShowNewTechCaseModal || onAttemptNewCase) && (
           <button
             type="button"
             className="btn btn-primary btn-sm"
-            onClick={() => setShowNewTechCaseModal(true)}
+            onClick={() => onAttemptNewCase ? onAttemptNewCase() : (setShowNewTechCaseModal && setShowNewTechCaseModal(true))}
             style={{ fontWeight: 700, borderRadius: '8px', padding: '8px 14px' }}
           >
             ➕ Reportar Trabajo
@@ -99,7 +107,7 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
 
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
           <SearchableStoreSelect
-            stores={stores}
+            stores={safeStores}
             value={techActivityStoreFilter}
             onChange={val => setTechActivityStoreFilter(val)}
             currentUser={currentUser}
@@ -114,7 +122,7 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
             style={{ padding: '6px 12px', fontSize: '0.8rem', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--bg-surface)', color: 'var(--text-main)' }}
           >
             <option value="todos">👷 Todos los Técnicos</option>
-            {users.filter(u => u.rol === 'tecnico' && u.estado).map(u => (
+            {safeUsers.filter(u => u.rol === 'tecnico' && u.estado).map(u => (
               <option key={u.id} value={u.id}>{u.nombre}</option>
             ))}
           </select>
@@ -129,8 +137,8 @@ export const TecnicosActividadTab: React.FC<TecnicosActividadTabProps> = ({
           </div>
         ) : (
           filteredCases.map(c => {
-            const store = stores.find(s => s.id === c.tiendaId);
-            const tech = users.find(u => u.id === c.tecnicoAsignadoId);
+            const store = safeStores.find(s => s.id === c.tiendaId);
+            const tech = safeUsers.find(u => u.id === c.tecnicoAsignadoId);
             const techName = c.tecnico_presencial_nombre || tech?.nombre || 'Técnico a cargo';
             const hasSupport = !!c.tecnico_apoyo_nombre;
             const inTime = c.hora_entrada ? new Date(c.hora_entrada).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A';

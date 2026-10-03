@@ -1,5 +1,7 @@
-import React from 'react';
-import type { Case, User } from '../types';
+import React, { useState, useEffect } from 'react';
+import type { Case, User, Store } from '../types';
+import { GpsCameraCapture } from './GpsCameraCapture';
+import type { GpsLocation } from '../services/geoPhotoService';
 
 interface TakeCaseModalProps {
   show: boolean;
@@ -10,7 +12,8 @@ interface TakeCaseModalProps {
   takeCaseSupportTech: string;
   setTakeCaseSupportTech: (val: string) => void;
   onClose: () => void;
-  onConfirm: (e?: any) => void;
+  onConfirm: (data?: { gpsPhoto?: string; gpsLocation?: GpsLocation }) => void;
+  stores?: Store[];
 }
 
 export const TakeCaseModal: React.FC<TakeCaseModalProps> = ({
@@ -22,19 +25,47 @@ export const TakeCaseModal: React.FC<TakeCaseModalProps> = ({
   takeCaseSupportTech,
   setTakeCaseSupportTech,
   onClose,
-  onConfirm
+  onConfirm,
+  stores = []
 }) => {
+  const [gpsPhoto, setGpsPhoto] = useState<string | null>(null);
+  const [gpsLocation, setGpsLocation] = useState<GpsLocation | null>(null);
+
+  // Reset al abrir/cerrar
+  useEffect(() => {
+    if (show) {
+      setGpsPhoto(null);
+      setGpsLocation(null);
+    }
+  }, [show]);
+
   if (!show || !selectedCase || !currentUser) return null;
+
+  const isTech = currentUser.rol === 'tecnico';
+  const currentStore = stores.find(s => s.id === selectedCase.tiendaId);
+  const storeLabel = currentStore ? `${currentStore.nombre} (${currentStore.ciudad})` : `Tienda #${selectedCase.tiendaId}`;
+
+  const isTeamInvalid = takeCaseMode === 'equipo' && !takeCaseSupportTech.trim();
+  const isGpsMissing = isTech && !gpsPhoto;
+  const isSubmitDisabled = isTeamInvalid || isGpsMissing;
+
+  const handleConfirmSubmit = () => {
+    if (isSubmitDisabled) return;
+    onConfirm({
+      gpsPhoto: gpsPhoto || undefined,
+      gpsLocation: gpsLocation || undefined
+    });
+  };
 
   return (
     <div className="modal-backdrop">
-      <div className="modal-sheet" style={{ maxWidth: '480px', width: '100%' }}>
+      <div className="modal-sheet" style={{ maxWidth: '480px', width: '100%', maxHeight: '92vh', overflowY: 'auto' }}>
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span style={{ fontSize: '1.25rem' }}>⚡</span>
             <div>
               <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>Tomar Caso #{selectedCase.id}</h3>
-              <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>Configuración de asignación presencial</p>
+              <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>Configuración de asignación presencial en {storeLabel}</p>
             </div>
           </div>
           <button 
@@ -122,8 +153,35 @@ export const TakeCaseModal: React.FC<TakeCaseModalProps> = ({
             </div>
           )}
 
+          {/* CAPTURA DE FOTO CON COORDENADAS GPS (EXCLUSIVO Y OBLIGATORIO PARA TÉCNICOS) */}
+          {isTech && (
+            <div>
+              <GpsCameraCapture
+                photoUrl={gpsPhoto}
+                onPhotoCaptured={(watermarked, loc) => {
+                  setGpsPhoto(watermarked);
+                  setGpsLocation(loc);
+                }}
+                onPhotoRemoved={() => {
+                  setGpsPhoto(null);
+                  setGpsLocation(null);
+                }}
+                techName={currentUser.nombre}
+                storeName={storeLabel}
+                actionTitle={`Inicio de Caso #${selectedCase.id}`}
+                required={true}
+                label="📸 Foto de Llegada con Coordenadas GPS (Obligatorio)"
+              />
+              {!gpsPhoto && (
+                <span style={{ fontSize: '0.72rem', color: '#f59e0b', marginTop: '4px', display: 'block', fontWeight: 600 }}>
+                  ⚠️ Como técnico, debes capturar una foto con GPS para validar tu presencia física en tienda antes de tomar el caso.
+                </span>
+              )}
+            </div>
+          )}
+
           <div style={{ padding: '10px', background: 'rgba(59, 130, 246, 0.08)', borderRadius: '6px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-            ℹ️ Al confirmar, el caso pasará a estado <strong>En Proceso</strong> y registrará su hora de entrada presencial.
+            ℹ️ Al confirmar, el caso pasará a estado <strong>En Proceso</strong> y registrará su hora de entrada presencial{isTech ? ' con verificación satelital' : ''}.
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
@@ -138,8 +196,8 @@ export const TakeCaseModal: React.FC<TakeCaseModalProps> = ({
               type="button" 
               className="btn btn-primary"
               style={{ fontWeight: 700 }}
-              disabled={takeCaseMode === 'equipo' && !takeCaseSupportTech.trim()}
-              onClick={onConfirm}
+              disabled={isSubmitDisabled}
+              onClick={handleConfirmSubmit}
             >
               ⚡ Confirmar y Comenzar
             </button>

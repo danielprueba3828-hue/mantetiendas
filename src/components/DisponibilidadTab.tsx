@@ -21,15 +21,19 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
   const [activeMonth, setActiveMonth] = React.useState<string>('todos');
   const [search, setSearch] = React.useState<string>('');
 
+  const safeShiftSchedule = Array.isArray(shiftSchedule) ? shiftSchedule : [];
+  const safeTechAvailability = Array.isArray(techAvailability) ? techAvailability : [];
+
   const months = React.useMemo(() => {
     const set = new Set<string>();
-    shiftSchedule.forEach(s => {
-      if (s.mes) set.add(s.mes.trim().toUpperCase());
+    safeShiftSchedule.forEach(s => {
+      if (s && s.mes) set.add(s.mes.trim().toUpperCase());
     });
     return ['todos', ...Array.from(set)];
-  }, [shiftSchedule]);
+  }, [safeShiftSchedule]);
 
-  const filteredSchedule = shiftSchedule.filter(s => {
+  const filteredSchedule = safeShiftSchedule.filter(s => {
+    if (!s) return false;
     if (activeMonth !== 'todos' && s.mes.toUpperCase() !== activeMonth.toUpperCase()) return false;
     if (search.trim()) {
       const q = search.toLowerCase().trim();
@@ -205,7 +209,7 @@ export const DisponibilidadTab: React.FC<DisponibilidadTabProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {techAvailability.map(t => (
+                {safeTechAvailability.map(t => (
                   <tr key={t.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
                     <td style={{ padding: '12px 14px', textAlign: 'left', fontWeight: 700 }}>
                       {t.tecnicoNombre}

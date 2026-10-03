@@ -15,7 +15,7 @@ import {
 } from './data';
 
 import { 
-  triggerNativeNotification, getUserBadgeText 
+  triggerNativeNotification, getUserBadgeText, encodeGpsInFilename, parseGpsFromFilename 
 } from './helpers';
 
 import type { SupervisorBillingData } from './billing';
@@ -42,6 +42,11 @@ import { EditCaseModal } from './components/EditCaseModal';
 import { DeleteCaseModal } from './components/DeleteCaseModal';
 import { TechTimbradorModal } from './components/TechTimbradorModal';
 import { TechTimbradorBanner } from './components/TechTimbradorBanner';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { dbOptimizer, DB_CACHE_PRESETS } from './services/dbOptimization';
+import { appStatePersistence } from './services/appStatePersistence';
+import { GpsCameraCapture } from './components/GpsCameraCapture';
+import type { GpsLocation } from './services/geoPhotoService';
 
 
 export default function App() {
@@ -83,25 +88,21 @@ export default function App() {
   }, []);
 
   
-  // Manejo de sesión: al cerrar el APK o el navegador, la sesión activa se cierra
-  // para solicitar autenticación biométrica (Huella, Face ID, Windows Hello) o credenciales al volver a entrar.
+  // Manejo de sesión persistente: al salir o cambiar de app (ver WhatsApp, fotos, materiales),
+  // se preserva la sesión activa sin deslogueos agresivos.
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
-      const isSessionActive = sessionStorage.getItem('maint_session_active');
-      if (isSessionActive === 'true') {
-        const saved = localStorage.getItem('maint_user');
-        return saved ? JSON.parse(saved) : null;
-      }
-      return null;
+      return appStatePersistence.getActiveUserSession();
     } catch {
       return null;
     }
   });
 
-  // Guardar datos del usuario para el servicio nativo de Android
+  // Guardar datos del usuario para persistencia y servicio de notificaciones
   useEffect(() => {
     if (currentUser) {
       try {
+        appStatePersistence.saveUserSession(currentUser);
         localStorage.setItem('mainttrac_user_info', JSON.stringify({
           nombre: currentUser.nombre,
           rol: currentUser.rol,
@@ -111,19 +112,23 @@ export default function App() {
     }
   }, [currentUser]);
 
-  // Manejo de ciclo de vida en Android APK / iOS: al minimizar, bloquear pantalla o cerrar el app,
-  // la sesión activa se suspende para exigir desbloqueo biométrico al retornar
+  // Manejo de ciclo de vida en Android APK / iOS / Web:
+  // Al minimizar o cambiar de app, mantener la sesión y guardar el estado actual
   useEffect(() => {
     let removeListener: (() => void) | undefined;
     try {
       CapApp.addListener('appStateChange', ({ isActive }) => {
         if (!isActive) {
-          sessionStorage.removeItem('maint_session_active');
+          // La app fue al fondo (cambio de app para ver materiales, etc.):
+          // Guardar timestamp de sesión activa
+          if (currentUser) {
+            appStatePersistence.saveUserSession(currentUser);
+          }
         } else {
-          const isSessionActive = sessionStorage.getItem('maint_session_active');
-          if (isSessionActive !== 'true') {
-            setCurrentUser(null);
-            setShowManualLoginForm(false);
+          // La app volvió a primer plano: asegurar sesión
+          const sessionUser = appStatePersistence.getActiveUserSession();
+          if (sessionUser && !currentUser) {
+            setCurrentUser(sessionUser);
           }
         }
       }).then(handle => {
@@ -136,7 +141,7 @@ export default function App() {
     return () => {
       if (removeListener) removeListener();
     };
-  }, []);
+  }, [currentUser]);
 
   // Estados y verificación de autenticación biométrica (Huella / Face ID / Windows Hello)
   const [isBiometricAvailable, setIsBiometricAvailable] = useState(false);
@@ -310,10 +315,20 @@ export default function App() {
     return savedTheme ? savedTheme === 'dark' : false; // Default: Light Mode
   });
 
-  // Navigation & Filters
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'admin' | 'tecnicos_actividad' | 'historial_asistencias' | 'agenda_turnos' | 'disponibilidad'>('dashboard');
-  const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
+  // Navigation & Filters con recuperación de estado al cambiar de app
+  const savedNav = appStatePersistence.getNavigationState();
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'admin' | 'tecnicos_actividad' | 'historial_asistencias' | 'agenda_turnos' | 'disponibilidad'>(() => {
+    return (savedNav?.activeTab as any) || 'dashboard';
+  });
+  const [selectedCaseId, setSelectedCaseId] = useState<number | null>(() => {
+    return savedNav?.selectedCaseId ?? null;
+  });
   const [caseDetailTab, setCaseDetailTab] = useState<'info' | 'asistencia' | 'bitacora' | 'evidencias' | 'materiales'>('info');
+  const [selectedEvidenceModal, setSelectedEvidenceModal] = useState<Evidence | null>(null);
+  const [showAddEvidenceModal, setShowAddEvidenceModal] = useState(false);
+  const [addEvidencePhoto, setAddEvidencePhoto] = useState<string | null>(null);
+  const [addEvidenceGpsLoc, setAddEvidenceGpsLoc] = useState<GpsLocation | null>(null);
+  const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
   const [disponibilidadTab, setDisponibilidadTab] = useState<'cuadrante' | 'horarios'>('cuadrante');
   const [adminSectionTab, setAdminSectionTab] = useState<'usuarios' | 'tiendas'>('usuarios');
   const [showAdminUserForm, setShowAdminUserForm] = useState(false);
@@ -324,10 +339,32 @@ export default function App() {
   const [adminStoreSearch, setAdminStoreSearch] = useState('');
   const [scheduleMonthFilter, setScheduleMonthFilter] = useState<string>('todos');
   const [scheduleSearchQuery, setScheduleSearchQuery] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<'todos' | 'pendiente' | 'en_proceso' | 'completado' | 'pausado_material'>('todos');
-  const [casesViewMode, setCasesViewMode] = useState<'pendientes' | 'concluidos'>('pendientes');
-  const [storeFilter, setStoreFilter] = useState<string>('todos');
-  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'todos' | 'pendiente' | 'en_proceso' | 'completado' | 'pausado_material'>(() => {
+    return (savedNav?.statusFilter as any) || 'todos';
+  });
+  const [casesViewMode, setCasesViewMode] = useState<'pendientes' | 'concluidos'>(() => {
+    return savedNav?.casesViewMode || 'pendientes';
+  });
+  const [storeFilter, setStoreFilter] = useState<string>(() => {
+    return savedNav?.storeFilter ? String(savedNav.storeFilter) : 'todos';
+  });
+  const [searchTerm, setSearchTerm] = useState(savedNav?.searchQuery || '');
+
+  // Guardar estado de navegación para mantener el lugar al cambiar de app
+  useEffect(() => {
+    appStatePersistence.saveNavigationState({
+      activeTab,
+      selectedCaseId,
+      casesViewMode,
+      statusFilter,
+      storeFilter: storeFilter !== 'todos' ? Number(storeFilter) : undefined,
+      searchQuery: searchTerm
+    });
+  }, [activeTab, selectedCaseId, casesViewMode, statusFilter, storeFilter, searchTerm]);
+
+  // Estados para foto con coordenadas GPS (obligatorio para técnicos)
+  const [techCaseGpsPhoto, setTechCaseGpsPhoto] = useState<string | null>(null);
+  const [techCaseGpsLocation, setTechCaseGpsLocation] = useState<GpsLocation | null>(null);
   
   // Notification panel toggle
   
@@ -379,6 +416,22 @@ export default function App() {
       return null;
     }
   });
+
+  // Estado para alertar de acción bloqueada cuando el técnico tiene un caso activo
+  const [blockedActionMessage, setBlockedActionMessage] = useState<{ title: string; detail: string; caseId?: number } | null>(null);
+
+  // Limpiar punch clock si el caso activo ya no existe en el sistema o fue concluido/eliminado
+  useEffect(() => {
+    if (activePunchClock && cases.length > 0) {
+      const activeCase = cases.find(c => c.id === activePunchClock.casoId);
+      if (!activeCase || activeCase.estado === 'concluido' || activeCase.estado === 'cerrado') {
+        setActivePunchClock(null);
+        try {
+          localStorage.removeItem(`maint_tech_punch_${currentUser?.id}`);
+        } catch {}
+      }
+    }
+  }, [cases, activePunchClock, currentUser?.id]);
 
 
   const handleAddPreMaterialItem = () => {
@@ -515,12 +568,28 @@ export default function App() {
 
     const pollSync = async () => {
       try {
-        // 1. Polling de nuevos casos
+        // 1. Polling de casos activos y recientes con evidencias completas
         const { data: latestCases } = await supabase
           .from('casos')
-          .select('*')
+          .select(`
+            *,
+            evidencias (*),
+            comentarios (*)
+          `)
           .order('id', { ascending: false })
-          .limit(5);
+          .limit(15);
+
+        // Si el usuario tiene un caso abierto específico que no está en los top 15, sincronizarlo también
+        if (selectedCaseId && latestCases && !latestCases.some((c: any) => c.id === selectedCaseId)) {
+          const { data: currentSelectedRow } = await supabase
+            .from('casos')
+            .select(`*, evidencias (*), comentarios (*)`)
+            .eq('id', selectedCaseId)
+            .single();
+          if (currentSelectedRow) {
+            latestCases.push(currentSelectedRow);
+          }
+        }
 
         if (latestCases && latestCases.length > 0) {
           const topId = latestCases[0].id;
@@ -547,6 +616,32 @@ export default function App() {
             const existingMap = new Map(prev.map(c => [c.id, c]));
 
             latestCases.forEach((dbC: any) => {
+              const parsedEvs: Evidence[] = (dbC.evidencias || []).map((ev: any) => {
+                const parsedCoords = ev.coordenadas || parseGpsFromFilename(ev.nombre_archivo);
+                return {
+                  id: ev.id,
+                  subidoPor: ev.subido_por,
+                  tipo: ev.tipo,
+                  archivoUrl: ev.archivo_url,
+                  nombreArchivo: ev.nombre_archivo,
+                  fecha: ev.fecha,
+                  coordenadas: parsedCoords
+                };
+              });
+
+              const entryEv = parsedEvs.find(e => e.tipo === 'foto_ingreso_gps' && e.coordenadas);
+              const exitEv = parsedEvs.find(e => (e.tipo === 'final' || e.tipo === 'foto_salida_gps') && e.coordenadas);
+              const latIn = dbC.gps_latitud_entrada || entryEv?.coordenadas?.latitude;
+              const lngIn = dbC.gps_longitud_entrada || entryEv?.coordenadas?.longitude;
+              const latOut = dbC.gps_latitud_salida || exitEv?.coordenadas?.latitude;
+              const lngOut = dbC.gps_longitud_salida || exitEv?.coordenadas?.longitude;
+
+              const existingCase = existingMap.get(dbC.id);
+              // Mantener fotos locales base64 si aún están en memoria y la nube tiene menos fotos
+              const combinedEvidencias = parsedEvs.length >= (existingCase?.evidencias?.length || 0)
+                ? parsedEvs
+                : existingCase?.evidencias || parsedEvs;
+
               const formatted: Case = {
                 id: dbC.id,
                 tiendaId: dbC.tienda_id,
@@ -558,12 +653,18 @@ export default function App() {
                 tecnicoAsignadoId: dbC.tecnico_asignado_id || undefined,
                 fechaCreacion: dbC.fecha_creacion,
                 fechaLimiteSla: dbC.fecha_limite_sla,
+                fechaCierre: dbC.fecha_cierre || undefined,
                 tecnico_presencial_nombre: dbC.tecnico_presencial_nombre || undefined,
                 hora_entrada: dbC.hora_entrada || undefined,
                 hora_salida: dbC.hora_salida || undefined,
                 es_caso_tecnico: dbC.es_caso_tecnico || false,
                 tecnico_estatus_trabajo: dbC.tecnico_estatus_trabajo || undefined,
                 reaperturas_count: dbC.reaperturas_count || 0,
+                pausado_por_material: dbC.pausado_por_material || false,
+                motivo_pausa_material: dbC.motivo_pausa_material || undefined,
+                fecha_pausa_material: dbC.fecha_pausa_material || undefined,
+                materiales_llegaron_tienda: dbC.materiales_llegaron_tienda || false,
+                fecha_llegada_materiales: dbC.fecha_llegada_materiales,
                 fecha_programada: dbC.fecha_programada || undefined,
                 turno_programado: dbC.turno_programado || undefined,
                 horas_estimadas: dbC.horas_estimadas || undefined,
@@ -573,9 +674,21 @@ export default function App() {
                 material_anticipado_cantidad: dbC.material_anticipado_cantidad || 1,
                 material_anticipado_items: dbC.material_anticipado_items || undefined,
                 material_anticipado_estado: dbC.material_anticipado_estado || undefined,
-                evidencias: existingMap.get(dbC.id)?.evidencias || [],
-                comentarios: existingMap.get(dbC.id)?.comentarios || [],
-                historial: existingMap.get(dbC.id)?.historial || []
+                gps_latitud_entrada: latIn,
+                gps_longitud_entrada: lngIn,
+                gps_latitud_salida: latOut,
+                gps_longitud_salida: lngOut,
+                evidencias: combinedEvidencias,
+                comentarios: (dbC.comentarios && dbC.comentarios.length > 0)
+                  ? dbC.comentarios.map((co: any) => ({
+                      id: co.id,
+                      autor: co.autor,
+                      rol: co.rol,
+                      texto: co.texto,
+                      fecha: co.fecha
+                    }))
+                  : (existingCase?.comentarios || []),
+                historial: existingCase?.historial || []
               };
 
               if (!existingMap.has(dbC.id)) {
@@ -583,8 +696,17 @@ export default function App() {
                 hasNewOrUpdated = true;
               } else {
                 const oldC = existingMap.get(dbC.id)!;
-                if (oldC.estado !== dbC.estado || oldC.tecnico_estatus_trabajo !== dbC.tecnico_estatus_trabajo || oldC.tecnicoAsignadoId !== dbC.tecnico_asignado_id) {
-                  existingMap.set(dbC.id, { ...oldC, ...formatted, evidencias: oldC.evidencias, comentarios: oldC.comentarios, historial: oldC.historial });
+                const evDiff = (oldC.evidencias?.length || 0) !== (formatted.evidencias?.length || 0);
+                const comDiff = (oldC.comentarios?.length || 0) !== (formatted.comentarios?.length || 0);
+                const statusDiff = oldC.estado !== dbC.estado ||
+                  oldC.tecnico_estatus_trabajo !== dbC.tecnico_estatus_trabajo ||
+                  oldC.tecnicoAsignadoId !== dbC.tecnico_asignado_id ||
+                  oldC.hora_entrada !== dbC.hora_entrada ||
+                  oldC.hora_salida !== dbC.hora_salida ||
+                  oldC.pausado_por_material !== dbC.pausado_por_material;
+
+                if (evDiff || comDiff || statusDiff) {
+                  existingMap.set(dbC.id, { ...oldC, ...formatted });
                   hasNewOrUpdated = true;
                 }
               }
@@ -747,10 +869,14 @@ export default function App() {
         });
 
         appStateListener = CapApp.addListener('appStateChange', ({ isActive }) => {
-          if (isActive && isSupabaseConfigured) {
-            supabase.from('casos').select('*').then(({ data }: any) => {
-              if (data) setCases(data.map((c: any) => ({ ...c, tiendaId: c.tienda_id })));
-            });
+          if (isActive) {
+            // Refrescar timestamp de sesión activa para evitar cierres de sesión no deseados al cambiar de app
+            try {
+              const currentActive = appStatePersistence.getActiveUserSession();
+              if (currentActive) {
+                appStatePersistence.saveUserSession(currentActive);
+              }
+            } catch {}
           }
         });
       }
@@ -900,6 +1026,22 @@ export default function App() {
               }
               return c;
             }));
+          } else if (payload.eventType === 'DELETE') {
+            const deletedId = payload.old?.id;
+            if (deletedId) {
+              setCases(prev => prev.filter(c => c.id !== deletedId));
+              setSelectedCaseId(prev => (prev === deletedId ? null : prev));
+              setActivePunchClock(prev => {
+                if (prev?.casoId === deletedId) {
+                  try {
+                    localStorage.removeItem(`maint_tech_punch_${currentUser?.id}`);
+                  } catch {}
+                  return null;
+                }
+                return prev;
+              });
+              dbOptimizer.invalidate('casos');
+            }
           }
         }
       )
@@ -1268,7 +1410,7 @@ export default function App() {
       supabase.removeChannel(channelUsuarios);
       supabase.removeChannel(channelTiendas);
     };
-  }, [isSupabaseConfigured, currentUser, stores]);
+  }, [isSupabaseConfigured, currentUser?.id]);
 
   useEffect(() => {
     try { localStorage.setItem('maint_stores', JSON.stringify(stores)); } catch {}
@@ -1279,9 +1421,15 @@ export default function App() {
 
     async function loadData() {
       try {
-        const { data: dbStores, error: errStores } = await supabase.from('tiendas').select('*');
-        if (!errStores && dbStores) {
-          setStores(dbStores.map((s: any) => ({
+        // 1. Tiendas (Caché de catálogo estático de 12h con SWR)
+        const { data: dbStores, error: errStores } = await dbOptimizer.fetchWithCache(
+          'tiendas',
+          async () => await supabase.from('tiendas').select('*'),
+          { ttlMs: DB_CACHE_PRESETS.STATIC_CATALOG }
+        );
+        const rawStores = Array.isArray(dbStores) ? dbStores : Array.isArray((dbStores as any)?.data) ? (dbStores as any).data : null;
+        if (!errStores && rawStores) {
+          setStores(rawStores.map((s: any) => ({
             id: s.id,
             nombre: s.nombre,
             ciudad: s.ciudad,
@@ -1289,9 +1437,15 @@ export default function App() {
           })));
         }
 
-        const { data: dbUsers, error: errUsers } = await supabase.from('usuarios').select('*');
-        if (!errUsers && dbUsers) {
-          setUsers(dbUsers.map((u: any) => ({
+        // 2. Usuarios (Caché de perfiles de 30m con SWR)
+        const { data: dbUsers, error: errUsers } = await dbOptimizer.fetchWithCache(
+          'usuarios',
+          async () => await supabase.from('usuarios').select('*'),
+          { ttlMs: DB_CACHE_PRESETS.USER_PROFILES }
+        );
+        const rawUsers = Array.isArray(dbUsers) ? dbUsers : Array.isArray((dbUsers as any)?.data) ? (dbUsers as any).data : null;
+        if (!errUsers && rawUsers) {
+          setUsers(rawUsers.map((u: any) => ({
             id: u.id,
             nombre: u.nombre,
             correo: u.correo,
@@ -1305,70 +1459,116 @@ export default function App() {
           })));
         }
 
-        const { data: dbCases, error: errCases } = await supabase.from('casos').select(`
-          *,
-          comentarios (*),
-          evidencias (*)
-        `);
-        if (!errCases && dbCases) {
-          setCases(dbCases.map((c: any) => ({
-            id: c.id,
-            tiendaId: c.tienda_id,
-            creadoPor: c.creado_por,
-            categoria: c.categoria,
-            descripcion: c.descripcion,
-            prioridad: c.prioridad_nivel,
-            estado: c.estado,
-            tecnicoAsignadoId: c.tecnico_asignado_id || undefined,
-            fechaCreacion: c.fecha_creacion,
-            fechaLimiteSla: c.fecha_limite_sla,
-            fechaCierre: c.fecha_cierre || undefined,
-            // Nuevos campos mapeados
-            tecnico_presencial_nombre: c.tecnico_presencial_nombre || undefined,
-            tecnico_apoyo_nombre: c.tecnico_apoyo_nombre || undefined,
-            hora_entrada: c.hora_entrada || undefined,
-            hora_salida: c.hora_salida || ((c.estado === 'concluido' || c.estado === 'cerrado') ? (c.fecha_cierre || c.fecha_creacion || new Date().toISOString()) : undefined),
-            es_caso_tecnico: c.es_caso_tecnico || false,
-            tecnico_estatus_trabajo: c.tecnico_estatus_trabajo || undefined,
-            reaperturas_count: c.reaperturas_count || 0,
-            pausado_por_material: c.pausado_por_material || false,
-            motivo_pausa_material: c.motivo_pausa_material || undefined,
-            fecha_pausa_material: c.fecha_pausa_material || undefined,
-            materiales_llegaron_tienda: c.materiales_llegaron_tienda || false,
-            fecha_llegada_materiales: c.fecha_llegada_materiales,
-            fecha_programada: c.fecha_programada,
-            turno_programado: c.turno_programado,
-            agendado_por: c.agendado_por,
-            horas_estimadas: c.horas_estimadas,
-            solicitud_material_anticipada: c.solicitud_material_anticipada,
-            material_anticipado_nombre: c.material_anticipado_nombre,
-            material_anticipado_cantidad: c.material_anticipado_cantidad,
-            material_anticipado_estado: c.material_anticipado_estado,
-            material_anticipado_aprobado_por: c.material_anticipado_aprobado_por || undefined,
-            evidencias: (c.evidencias || []).map((ev: any) => ({
-              id: ev.id,
-              subidoPor: ev.subido_por,
-              tipo: ev.tipo,
-              archivoUrl: ev.archivo_url,
-              nombreArchivo: ev.nombre_archivo,
-              fecha: ev.fecha
-            })),
-            comentarios: (c.comentarios || []).sort((x: any, y: any) => new Date(x.fecha).getTime() - new Date(y.fecha).getTime()).map((co: any) => ({
-              id: co.id,
-              autor: co.autor,
-              rol: co.rol,
-              texto: co.texto,
-              fecha: co.fecha
-            })),
-            historial: []
-          })));
+        // 3. Casos (Caché operativa con SWR + actualización reactiva por Realtime)
+        const { data: dbCases, error: errCases } = await dbOptimizer.fetchWithCache(
+          'casos',
+          async () => await supabase.from('casos').select(`
+            *,
+            comentarios (*),
+            evidencias (*)
+          `),
+          { ttlMs: DB_CACHE_PRESETS.OPERATIONAL_DATA }
+        );
+        const rawCases = Array.isArray(dbCases) ? dbCases : Array.isArray((dbCases as any)?.data) ? (dbCases as any).data : null;
+        if (!errCases && rawCases) {
+          setCases(rawCases.map((c: any) => {
+            const parsedEvidencias: Evidence[] = (c.evidencias || []).map((ev: any) => {
+              const parsedCoords = ev.coordenadas || parseGpsFromFilename(ev.nombre_archivo);
+              return {
+                id: ev.id,
+                subidoPor: ev.subido_por,
+                tipo: ev.tipo,
+                archivoUrl: ev.archivo_url,
+                nombreArchivo: ev.nombre_archivo,
+                fecha: ev.fecha,
+                coordenadas: parsedCoords
+              };
+            });
+
+            const entryEv = parsedEvidencias.find(e => e.tipo === 'foto_ingreso_gps' && e.coordenadas);
+            const exitEv = parsedEvidencias.find(e => (e.tipo === 'final' || e.tipo === 'foto_salida_gps') && e.coordenadas);
+            const latIn = c.gps_latitud_entrada || entryEv?.coordenadas?.latitude;
+            const lngIn = c.gps_longitud_entrada || entryEv?.coordenadas?.longitude;
+            const latOut = c.gps_latitud_salida || exitEv?.coordenadas?.latitude;
+            const lngOut = c.gps_longitud_salida || exitEv?.coordenadas?.longitude;
+
+            return {
+              id: c.id,
+              tiendaId: c.tienda_id,
+              creadoPor: c.creado_por,
+              categoria: c.categoria,
+              descripcion: c.descripcion,
+              prioridad: c.prioridad_nivel,
+              estado: c.estado,
+              tecnicoAsignadoId: c.tecnico_asignado_id || undefined,
+              fechaCreacion: c.fecha_creacion,
+              fechaLimiteSla: c.fecha_limite_sla,
+              fechaCierre: c.fecha_cierre || undefined,
+              // Nuevos campos mapeados
+              tecnico_presencial_nombre: c.tecnico_presencial_nombre || undefined,
+              tecnico_apoyo_nombre: c.tecnico_apoyo_nombre || undefined,
+              hora_entrada: c.hora_entrada || undefined,
+              hora_salida: c.hora_salida || ((c.estado === 'concluido' || c.estado === 'cerrado') ? (c.fecha_cierre || c.fecha_creacion || new Date().toISOString()) : undefined),
+              es_caso_tecnico: c.es_caso_tecnico || false,
+              tecnico_estatus_trabajo: c.tecnico_estatus_trabajo || undefined,
+              reaperturas_count: c.reaperturas_count || 0,
+              pausado_por_material: c.pausado_por_material || false,
+              motivo_pausa_material: c.motivo_pausa_material || undefined,
+              fecha_pausa_material: c.fecha_pausa_material || undefined,
+              materiales_llegaron_tienda: c.materiales_llegaron_tienda || false,
+              fecha_llegada_materiales: c.fecha_llegada_materiales,
+              fecha_programada: c.fecha_programada,
+              turno_programado: c.turno_programado,
+              agendado_por: c.agendado_por,
+              horas_estimadas: c.horas_estimadas,
+              solicitud_material_anticipada: c.solicitud_material_anticipada,
+              material_anticipado_nombre: c.material_anticipado_nombre,
+              material_anticipado_cantidad: c.material_anticipado_cantidad,
+              material_anticipado_estado: c.material_anticipado_estado,
+              material_anticipado_aprobado_por: c.material_anticipado_aprobado_por || undefined,
+              gps_latitud_entrada: latIn,
+              gps_longitud_entrada: lngIn,
+              gps_latitud_salida: latOut,
+              gps_longitud_salida: lngOut,
+              jornadas: c.hora_entrada ? [{
+                id: 1,
+                numeroVisita: 1,
+                tecnicoNombre: c.tecnico_presencial_nombre || 'Técnico',
+                horaEntrada: c.hora_entrada,
+                horaSalida: c.hora_salida,
+                registradoEntradaPor: c.tecnico_presencial_nombre || 'Técnico',
+                gpsEntrada: (latIn && lngIn) ? {
+                  latitude: latIn,
+                  longitude: lngIn
+                } : undefined,
+                gpsSalida: (latOut && lngOut) ? {
+                  latitude: latOut,
+                  longitude: lngOut
+                } : undefined
+              }] : [],
+              evidencias: parsedEvidencias,
+              comentarios: (c.comentarios || []).sort((x: any, y: any) => new Date(x.fecha).getTime() - new Date(y.fecha).getTime()).map((co: any) => ({
+                id: co.id,
+                autor: co.autor,
+                rol: co.rol,
+                texto: co.texto,
+                fecha: co.fecha
+              })),
+              historial: []
+            };
+          }));
         }
 
-        const { data: dbNotifs, error: errNotifs } = await supabase
-          .from('notificaciones')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(50);
+        // 4. Notificaciones (Caché de 2m con SWR)
+        const { data: dbNotifs, error: errNotifs } = await dbOptimizer.fetchWithCache(
+          'notificaciones',
+          async () => await supabase
+            .from('notificaciones')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(50),
+          { ttlMs: DB_CACHE_PRESETS.NOTIFICATIONS }
+        );
         if (!errNotifs && dbNotifs) {
           setNotifications(dbNotifs.map((n: any) => ({
             id: n.id,
@@ -1384,11 +1584,15 @@ export default function App() {
           })));
         }
 
-        // Cargar pedidos_materiales
-        const { data: dbMats, error: errMats } = await supabase
-          .from('pedidos_materiales')
-          .select('*')
-          .order('created_at', { ascending: false });
+        // 5. Cargar pedidos_materiales (Caché operativa con SWR)
+        const { data: dbMats, error: errMats } = await dbOptimizer.fetchWithCache(
+          'pedidos_materiales',
+          async () => await supabase
+            .from('pedidos_materiales')
+            .select('*')
+            .order('created_at', { ascending: false }),
+          { ttlMs: DB_CACHE_PRESETS.OPERATIONAL_DATA }
+        );
         if (!errMats && dbMats) {
           setMaterialRequests(dbMats.map((m: any) => ({
             id: m.id,
@@ -1406,11 +1610,15 @@ export default function App() {
           })));
         }
 
-        // Cargar disponibilidad_tecnicos
-        const { data: dbTechs, error: errTechs } = await supabase
-          .from('disponibilidad_tecnicos')
-          .select('*')
-          .order('created_at', { ascending: false });
+        // 6. Cargar disponibilidad_tecnicos (Caché operativa con SWR)
+        const { data: dbTechs, error: errTechs } = await dbOptimizer.fetchWithCache(
+          'disponibilidad_tecnicos',
+          async () => await supabase
+            .from('disponibilidad_tecnicos')
+            .select('*')
+            .order('created_at', { ascending: false }),
+          { ttlMs: DB_CACHE_PRESETS.OPERATIONAL_DATA }
+        );
         if (!errTechs && dbTechs) {
           setTechAvailability(dbTechs.map((t: any) => ({
             id: t.id,
@@ -1430,6 +1638,77 @@ export default function App() {
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   , [isSupabaseConfigured]);
+
+  // Sincronización automática de evidencias locales (base64) hacia Supabase
+  useEffect(() => {
+    if (!isSupabaseConfigured || cases.length === 0) return;
+
+    let isCancelled = false;
+    const syncLocalEvidences = async () => {
+      for (const c of cases) {
+        if (isCancelled) break;
+        if (c.evidencias && c.evidencias.length > 0) {
+          const base64Evs = c.evidencias.filter(e => e.archivoUrl && e.archivoUrl.startsWith('data:image/'));
+          if (base64Evs.length > 0) {
+            try {
+              // 1. Verificar si el caso realmente existe en Supabase antes de subir evidencias (evita error 409 FK)
+              const { data: caseExists } = await supabase
+                .from('casos')
+                .select('id')
+                .eq('id', c.id)
+                .maybeSingle();
+
+              if (!caseExists) {
+                // El caso fue eliminado o no existe en Supabase -> purgar de la memoria local
+                setCases(prev => prev.filter(x => x.id !== c.id));
+                dbOptimizer.invalidate('casos');
+                continue;
+              }
+
+              // 2. Comprobar qué evidencias ya existen en la nube
+              const { data: cloudEvs } = await supabase
+                .from('evidencias')
+                .select('id, nombre_archivo')
+                .eq('caso_id', c.id);
+
+              const cloudFilenames = new Set((cloudEvs || []).map(e => e.nombre_archivo));
+              const pendingToUpload = base64Evs.filter(ev => {
+                const fname = encodeGpsInFilename(ev.nombreArchivo || 'evidencia.jpg', ev.coordenadas);
+                return !cloudFilenames.has(fname) && !cloudFilenames.has(ev.nombreArchivo);
+              });
+
+              if (pendingToUpload.length > 0) {
+                console.log(`[AutoSync] Sincronizando ${pendingToUpload.length} evidencias para el caso #${c.id}...`);
+                const inserts = pendingToUpload.map((ev, i) => ({
+                  caso_id: c.id,
+                  subido_por: ev.subidoPor || 'Técnico',
+                  tipo: ev.tipo || 'foto_ingreso_gps',
+                  archivo_url: ev.archivoUrl,
+                  nombre_archivo: encodeGpsInFilename(ev.nombreArchivo || `evidencia_${i + 1}.jpg`, ev.coordenadas),
+                  fecha: ev.fecha || new Date().toISOString()
+                }));
+                const { error: insErr } = await supabase.from('evidencias').insert(inserts);
+                if (!insErr) {
+                  console.log(`[AutoSync] ¡Evidencias del caso #${c.id} subidas a Supabase con éxito!`);
+                  dbOptimizer.invalidate('casos');
+                } else {
+                  console.warn(`[AutoSync] Omitiendo inserción de evidencia para caso #${c.id}:`, insErr.message);
+                }
+              }
+            } catch (syncErr) {
+              console.warn(`[AutoSync] Error verificando caso #${c.id}:`, syncErr);
+            }
+          }
+        }
+      }
+    };
+
+    const timer = setTimeout(syncLocalEvidences, 1800);
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [cases, isSupabaseConfigured]);
 
   const handleLogout = () => {
     sessionStorage.removeItem('maint_session_active');
@@ -1677,31 +1956,117 @@ export default function App() {
     const year = String(dateObj.getFullYear()).slice(-2);
     
     // Conteo correlativo individual e independiente por tienda para cada mes
-    const casesInSameMonthAndStore = cases
-      .filter(other => {
-        if (!other.fechaCreacion || other.tiendaId !== c.tiendaId) return false;
+    const safeCases: Case[] = Array.isArray(cases) 
+      ? cases 
+      : Array.isArray((cases as any)?.data) 
+        ? (cases as any).data 
+        : [];
+
+    const casesInSameMonthAndStore = safeCases
+      .filter((other: Case) => {
+        if (!other || !other.fechaCreacion || other.tiendaId !== c.tiendaId) return false;
         const oDate = new Date(other.fechaCreacion);
         return oDate.getMonth() === dateObj.getMonth() && oDate.getFullYear() === dateObj.getFullYear();
       })
-      .sort((a, b) => new Date(a.fechaCreacion).getTime() - new Date(b.fechaCreacion).getTime());
+      .sort((a: Case, b: Case) => new Date(a.fechaCreacion).getTime() - new Date(b.fechaCreacion).getTime());
       
-    const seqNumber = casesInSameMonthAndStore.findIndex(other => other.id === c.id) + 1;
+    const seqNumber = casesInSameMonthAndStore.findIndex((other: Case) => other && other.id === c.id) + 1;
     return `${month}${year}-${seqNumber || 1}`;
   };
 
   const isSlaBreached = (c: Case): boolean => {
+    if (!c || !c.fechaLimiteSla) return false;
     if (c.estado === 'concluido' || c.estado === 'cerrado') {
       return c.fechaCierre ? new Date(c.fechaCierre) > new Date(c.fechaLimiteSla) : false;
     }
     return new Date() > new Date(c.fechaLimiteSla);
   };
 
-  const userVisibleCases = cases.filter(c => isCaseVisibleToUser(c, currentUser));
-  const activeCases = userVisibleCases.filter(c => c.estado !== 'concluido' && c.estado !== 'cerrado');
-  const concludedCases = userVisibleCases.filter(c => c.estado === 'concluido' || c.estado === 'cerrado');
-  const pendingUnassigned = activeCases.filter(c => c.estado === 'pendiente');
-  const inProgressCases = activeCases.filter(c => c.estado === 'en_proceso' && !c.pausado_por_material);
-  const pausedCases = activeCases.filter(c => Boolean(c.pausado_por_material));
+  const safeCases: Case[] = Array.isArray(cases) 
+    ? cases 
+    : Array.isArray((cases as any)?.data) 
+      ? (cases as any).data 
+      : [];
+
+  const userVisibleCases = safeCases.filter(c => c && isCaseVisibleToUser(c, currentUser));
+  const activeCases = userVisibleCases.filter(c => c && c.estado !== 'concluido' && c.estado !== 'cerrado');
+  const concludedCases = userVisibleCases.filter(c => c && (c.estado === 'concluido' || c.estado === 'cerrado'));
+  const pendingUnassigned = activeCases.filter(c => c && c.estado === 'pendiente');
+  const inProgressCases = activeCases.filter(c => c && c.estado === 'en_proceso' && !c.pausado_por_material);
+  const pausedCases = activeCases.filter(c => c && Boolean(c.pausado_por_material));
+
+  const safeStores: Store[] = Array.isArray(stores) ? stores : [];
+  const safeUsers: User[] = Array.isArray(users) ? users : [];
+
+  // Caso que el técnico está atendiendo activamente
+  const techActiveCase = React.useMemo(() => {
+    if (currentUser?.rol !== 'tecnico') return null;
+    if (activePunchClock && activePunchClock.casoId) {
+      const found = safeCases.find(c => c && c.id === activePunchClock.casoId);
+      if (found && found.estado !== 'concluido' && found.estado !== 'cerrado') return found;
+    }
+    const inProgress = safeCases.find(c => 
+      c && 
+      c.tecnicoAsignadoId === currentUser.id && 
+      (c.estado === 'en_proceso' || c.hora_entrada) && 
+      !c.hora_salida && 
+      c.estado !== 'concluido' && 
+      c.estado !== 'cerrado' &&
+      !c.pausado_por_material
+    );
+    return inProgress || null;
+  }, [currentUser, activePunchClock, safeCases]);
+
+  const effectivePunchClock: ActiveTechPunchClock | null = React.useMemo(() => {
+    if (activePunchClock) return activePunchClock;
+    if (techActiveCase && currentUser) {
+      return {
+        tecnicoId: currentUser.id,
+        tecnicoNombre: currentUser.nombre || 'Técnico',
+        tiendaId: techActiveCase.tiendaId,
+        casoId: techActiveCase.id,
+        horaIngreso: techActiveCase.hora_entrada || techActiveCase.fechaCreacion,
+        numeroVisita: 1
+      };
+    }
+    return null;
+  }, [activePunchClock, techActiveCase, currentUser]);
+
+  // Selección controlada de casos: Los técnicos solo pueden abrir su caso en curso mientras atienden
+  const handleSelectCase = (caseId: number | null) => {
+    if (caseId === null) {
+      setSelectedCaseId(null);
+      return;
+    }
+    if (currentUser?.rol === 'tecnico' && techActiveCase && techActiveCase.id !== caseId) {
+      const store = safeStores.find(s => s && s.id === techActiveCase.tiendaId);
+      setBlockedActionMessage({
+        title: "Atención Exclusiva en Caso Activo",
+        detail: `Actualmente te encuentras atendiendo el Caso #${techActiveCase.id} (${techActiveCase.categoria}) en ${store ? store.nombre : 'tienda'}. Por normativa operativa, debes concluir o registrar la salida de este caso antes de poder abrir o atender otro trabajo.`,
+        caseId: techActiveCase.id
+      });
+      return;
+    }
+    setSelectedCaseId(caseId);
+  };
+
+  // Creación controlada de casos: Los técnicos no pueden crear otro caso mientras atienden uno
+  const handleAttemptNewCase = () => {
+    if (currentUser?.rol === 'tecnico' && techActiveCase) {
+      const store = safeStores.find(s => s && s.id === techActiveCase.tiendaId);
+      setBlockedActionMessage({
+        title: "Atención Exclusiva en Caso Activo",
+        detail: `Ya te encuentras atendiendo el Caso #${techActiveCase.id} (${techActiveCase.categoria}) en ${store ? store.nombre : 'tienda'}. Debes finalizar tu asistencia actual antes de poder registrar o crear un nuevo caso.`,
+        caseId: techActiveCase.id
+      });
+      return;
+    }
+    if (currentUser?.rol === 'tecnico') {
+      setShowNewTechCaseModal(true);
+    } else {
+      setShowNewCaseModal(true);
+    }
+  };
 
   const getHumanDate = (dateStr?: string) => {
     if (!dateStr) return '';
@@ -1950,8 +2315,24 @@ export default function App() {
           material_anticipado_items: validPreMaterials,
           material_anticipado_estado: 'pendiente_aprobacion'
         } : {})
-      }]).then(({ error }: any) => {
-        if (error) console.error("Error al crear caso en Supabase:", error);
+      }]).then(async ({ error }: any) => {
+        if (error) {
+          console.error("Error al crear caso en Supabase:", error);
+        } else {
+          if (initialEvidences.length > 0) {
+            const evRows = initialEvidences.map(ev => ({
+              caso_id: newId,
+              subido_por: ev.subidoPor,
+              tipo: ev.tipo,
+              archivo_url: ev.archivoUrl,
+              nombre_archivo: ev.nombreArchivo,
+              fecha: ev.fecha
+            }));
+            const { error: evErr } = await supabase.from('evidencias').insert(evRows);
+            if (evErr) console.error("Error al guardar evidencias iniciales en Supabase:", evErr);
+          }
+          dbOptimizer.invalidate('casos');
+        }
       });
     }
 
@@ -2139,13 +2520,39 @@ export default function App() {
     e.preventDefault();
     if (!currentUser || !techCaseCategory.trim() || !techCaseDesc.trim()) return;
 
+    // Validación estricta para técnicos: foto con coordenadas GPS obligatoria
+    if (currentUser.rol === 'tecnico' && !techCaseGpsPhoto) {
+      alert("Como técnico, es obligatorio capturar una fotografía con coordenadas GPS para registrar el caso.");
+      return;
+    }
+
     const now = new Date();
     const limit = new Date(now.getTime() + 48 * 3600000).toISOString(); // 48h default for tech reports
     const newId = cases.length > 0 ? Math.max(...cases.map(c => c.id)) + 1 : 2001;
-    
-    
 
     const assignedStoreId = techCaseStoreId || (stores[0]?.id || 1);
+
+    const initialEvidence: Evidence[] = techCaseGpsPhoto ? [{
+      id: Date.now(),
+      subidoPor: currentUser.nombre,
+      tipo: 'foto_ingreso_gps',
+      archivoUrl: techCaseGpsPhoto,
+      nombreArchivo: 'evidencia_ingreso_gps.jpg',
+      fecha: now.toISOString(),
+      coordenadas: techCaseGpsLocation ? {
+        latitude: techCaseGpsLocation.latitude,
+        longitude: techCaseGpsLocation.longitude,
+        accuracy: techCaseGpsLocation.accuracy
+      } : undefined
+    }] : [];
+
+    const initialComments = techCaseGpsPhoto ? [{
+      id: Date.now() + 1,
+      autor: currentUser.nombre,
+      rol: currentUser.rol,
+      texto: `📍 CREACIÓN DE CASO CON FOTO GPS: Técnico ${currentUser.nombre} registró el caso en sitio con coordenadas satelitales verificadas.`,
+      fecha: now.toISOString()
+    }] : [];
 
     const newCase: Case = {
       id: newId,
@@ -2162,19 +2569,27 @@ export default function App() {
       tecnico_estatus_trabajo: techStatus,
       tecnico_presencial_nombre: currentUser.nombre,
       hora_entrada: now.toISOString(),
-      evidencias: [],
-      comentarios: [],
+      gps_latitud_entrada: techCaseGpsLocation?.latitude,
+      gps_longitud_entrada: techCaseGpsLocation?.longitude,
+      evidencias: initialEvidence,
+      comentarios: initialComments,
       historial: [
         { id: Date.now(), estadoNuevo: 'en_proceso', usuario: currentUser.nombre, fecha: now.toISOString() }
       ]
     };
 
     setCases([newCase, ...cases]);
+    // Actualizar en caché L1/L2
+    dbOptimizer.updateCachedList<Case>('casos', (prevList) => [newCase, ...(prevList || [])]);
 
     if (isSupabaseConfigured) {
+      const numericStoreId = typeof assignedStoreId === 'number' 
+        ? assignedStoreId 
+        : parseInt(String(assignedStoreId).replace(/\D/g, ''), 10) || 1;
+
       supabase.from('casos').insert([{
         id: newId,
-        tienda_id: assignedStoreId,
+        tienda_id: numericStoreId,
         creado_por: currentUser.id,
         categoria: techCaseCategory.trim(),
         descripcion: techCaseDesc.trim(),
@@ -2187,9 +2602,31 @@ export default function App() {
         tecnico_estatus_trabajo: techStatus,
         tecnico_presencial_nombre: currentUser.nombre,
         hora_entrada: now.toISOString()
-      }]).then(({ error }: any) => {
+      }]).then(async ({ error }: any) => {
         if (error) {
           console.error("Error al crear caso técnico en Supabase:", error);
+        } else if (techCaseGpsPhoto) {
+          // Insertar evidencia con coordenadas satelitales codificadas en el nombre
+          const filename = encodeGpsInFilename('evidencia_ingreso_gps.jpg', techCaseGpsLocation);
+          const { error: errEv } = await supabase.from('evidencias').insert([{
+            caso_id: newId,
+            subido_por: currentUser.nombre,
+            tipo: 'foto_ingreso_gps',
+            archivo_url: techCaseGpsPhoto,
+            nombre_archivo: filename,
+            fecha: now.toISOString()
+          }]);
+          if (errEv) console.error("Error al insertar evidencia GPS en Supabase:", errEv);
+
+          await supabase.from('comentarios').insert([{
+            caso_id: newId,
+            autor: currentUser.nombre,
+            rol: currentUser.rol,
+            texto: `📍 CREACIÓN DE CASO CON FOTO GPS: Técnico ${currentUser.nombre} registró el caso en sitio con coordenadas satelitales verificadas.`,
+            fecha: now.toISOString()
+          }]);
+
+          dbOptimizer.invalidate('casos');
         }
       });
     }
@@ -2200,9 +2637,13 @@ export default function App() {
       { tiendaId: techCaseStoreId || undefined, casoId: newId }
     );
 
+    // Limpiar formulario y borrador guardado
+    appStatePersistence.clearTechCaseDraft();
     setTechCaseCategory('');
     setTechCaseDesc('');
     setTechCaseStoreId(0);
+    setTechCaseGpsPhoto(null);
+    setTechCaseGpsLocation(null);
     setTechStatus('Trabajando en tienda');
     setShowNewTechCaseModal(false);
     setSelectedCaseId(newId);
@@ -2214,9 +2655,11 @@ export default function App() {
   const canEditOrDeleteCase = (c: Case) => {
     if (!currentUser) return false;
     // Si el usuario es el creador del caso (sea técnico o local)
-    if (c.creadoPor === currentUser.id) return true;
+    if (String(c.creadoPor) === String(currentUser.id)) return true;
+    // Si es técnico y está asignado al caso o es caso técnico de él
+    if (currentUser.rol === 'tecnico' && (String(c.tecnicoAsignadoId) === String(currentUser.id) || c.es_caso_tecnico)) return true;
     // Si es usuario tienda (jefe_tienda o subjefe) y el caso pertenece a su tienda
-    if ((currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && currentUser.tiendaId === c.tiendaId) return true;
+    if ((currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && (!currentUser.tiendaId || currentUser.tiendaId === c.tiendaId)) return true;
     // Administradores y supervisores también tienen facultades de gestión
     if (currentUser.rol === 'administrador' || currentUser.rol === 'supervisor') return true;
     return false;
@@ -2274,6 +2717,7 @@ export default function App() {
             texto: `✏️ Caso editado por ${currentUser?.nombre || 'Usuario'}: se actualizó la categoría y/o descripción.`,
             fecha: new Date().toISOString()
           }]);
+          dbOptimizer.invalidate('casos');
         }
       } catch (err) {
         console.error("Error al guardar edición en Supabase:", err);
@@ -2292,10 +2736,16 @@ export default function App() {
     if (!deletingCase) return;
     const caseId = deletingCase.id;
 
-    // Eliminar de React State
+    // Eliminar de React State inmediatamente
     setCases(prev => prev.filter(c => c.id !== caseId));
     if (selectedCaseId === caseId) {
       setSelectedCaseId(null);
+    }
+    if (activePunchClock?.casoId === caseId) {
+      setActivePunchClock(null);
+      try {
+        localStorage.removeItem(`maint_tech_punch_${currentUser?.id}`);
+      } catch {}
     }
 
     // Eliminar de Supabase si está configurado
@@ -2304,11 +2754,13 @@ export default function App() {
         // Eliminar registros dependientes primero para evitar conflictos de clave foránea
         await supabase.from('comentarios').delete().eq('caso_id', caseId);
         await supabase.from('evidencias').delete().eq('caso_id', caseId);
+        await supabase.from('pedidos_materiales').delete().eq('caso_id', caseId);
         await supabase.from('notificaciones').delete().eq('caso_id', caseId);
         const { error } = await supabase.from('casos').delete().eq('id', caseId);
         if (error) {
           console.error("Error al eliminar caso en Supabase:", error);
         }
+        dbOptimizer.invalidate('casos');
       } catch (err) {
         console.error("Error al eliminar caso en Supabase:", err);
       }
@@ -2579,9 +3031,19 @@ export default function App() {
   };
 
   // Confirm Take Case (Solo or Team)
-  const handleConfirmTakeCase = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleConfirmTakeCase = (payloadOrEvent?: any) => {
+    if (payloadOrEvent && typeof payloadOrEvent.preventDefault === 'function') {
+      payloadOrEvent.preventDefault();
+    }
     if (!currentUser || !selectedCaseId) return;
+
+    // Validación estricta para técnicos: foto con coordenadas GPS obligatoria
+    const gpsPhoto = payloadOrEvent?.gpsPhoto;
+    const gpsLocation = payloadOrEvent?.gpsLocation as GpsLocation | undefined;
+    if (currentUser.rol === 'tecnico' && !gpsPhoto) {
+      alert("Como técnico, es obligatorio capturar una fotografía con coordenadas GPS para validar tu presencia física en tienda antes de tomar el caso.");
+      return;
+    }
 
     const now = new Date().toISOString();
     const caseId = selectedCaseId;
@@ -2604,6 +3066,23 @@ export default function App() {
     };
     const updatedJornadas = [...currentJornadas, newJornadaEntry];
 
+    const gpsEvidences: Evidence[] = gpsPhoto ? [{
+      id: Date.now(),
+      subidoPor: currentUser.nombre,
+      tipo: 'foto_ingreso_gps',
+      archivoUrl: gpsPhoto,
+      nombreArchivo: `ingreso_gps_caso_${caseId}.jpg`,
+      fecha: now
+    }] : [];
+
+    const gpsCommentDetail = gpsLocation
+      ? ` • 📍 Coordenadas GPS: Lat ${gpsLocation.latitude.toFixed(6)}, Lng ${gpsLocation.longitude.toFixed(6)} (±${Math.round(gpsLocation.accuracy)}m)`
+      : gpsPhoto ? ` • 📍 Foto con Coordenadas GPS Registrada.` : '';
+
+    const commentText = isTeam
+      ? `👥 TRABAJO EN EQUIPO: Los técnicos ${mainName} y ${supportName} se han puesto a trabajar juntos en este caso presencialmente.${gpsCommentDetail}`
+      : `👷 Técnico ${mainName} tomó la asignación de este caso y comenzó la atención presencial.${gpsCommentDetail}`;
+
     setCases(cases.map(c => {
       if (c.id === caseId) {
         return {
@@ -2618,15 +3097,14 @@ export default function App() {
           motivo_pausa_material: undefined,
           fecha_pausa_material: undefined,
           jornadas: updatedJornadas,
+          evidencias: [...(c.evidencias || []), ...gpsEvidences],
           comentarios: [
             ...c.comentarios,
             {
               id: Date.now(),
               autor: currentUser.nombre,
               rol: currentUser.rol,
-              texto: isTeam
-                ? `👥 TRABAJO EN EQUIPO: Los técnicos ${mainName} y ${supportName} se han puesto a trabajar juntos en este caso presencialmente.`
-                : `👷 Técnico ${mainName} tomó la asignación de este caso y comenzó la atención presencial.`,
+              texto: commentText,
               fecha: now
             }
           ],
@@ -2638,6 +3116,22 @@ export default function App() {
       }
       return c;
     }));
+
+    // Actualizar en caché L1/L2
+    dbOptimizer.updateCachedList<Case>('casos', (prevList) => {
+      return (prevList || []).map(c => {
+        if (c.id === caseId) {
+          return {
+            ...c,
+            estado: 'en_proceso' as const,
+            tecnico_presencial_nombre: mainName,
+            hora_entrada: now,
+            evidencias: [...(c.evidencias || []), ...gpsEvidences]
+          };
+        }
+        return c;
+      });
+    });
 
     // Iniciar Timbrador activo inmediatamente para el técnico
     const punch: ActiveTechPunchClock = {
@@ -2668,13 +3162,22 @@ export default function App() {
       }).eq('id', caseId).then(({ error }: any) => {
         if (error) console.error("Error al actualizar caso en Supabase:", error);
 
+        if (gpsPhoto) {
+          supabase.from('evidencias').insert([{
+            caso_id: caseId,
+            subido_por: currentUser.nombre,
+            tipo: 'foto_ingreso_gps',
+            archivo_url: gpsPhoto,
+            nombre_archivo: `ingreso_gps_caso_${caseId}.jpg`,
+            fecha: now
+          }]).then(() => {});
+        }
+
         supabase.from('comentarios').insert([{
           caso_id: caseId,
           autor: currentUser.nombre,
           rol: currentUser.rol,
-          texto: isTeam
-            ? `👥 TRABAJO EN EQUIPO: Los técnicos ${mainName} y ${supportName} se han puesto a trabajar juntos en este caso presencialmente.`
-            : `👷 Técnico ${mainName} tomó la asignación de este caso y comenzó la atención presencial.`,
+          texto: commentText,
           fecha: now
         }]);
       });
@@ -2705,7 +3208,12 @@ export default function App() {
   const [solutionDesc, setSolutionDesc] = useState('');
 
   // Helper directo para Concluir Caso (usado por SolveModal y por el Timbrador)
-  const handleConcludeCaseDirect = (caseId: number, solutionText: string, evidencePhotos: string[]) => {
+  const handleConcludeCaseDirect = (
+    caseId: number, 
+    solutionText: string, 
+    evidencePhotos: string[],
+    gpsLocation?: { latitude: number; longitude: number; accuracy?: number }
+  ) => {
     if (!currentUser) return;
 
     const desc = solutionText.trim() || 'Trabajo técnico finalizado y solucionado conforme en tienda.';
@@ -2726,7 +3234,8 @@ export default function App() {
               ...updatedJornadas[lastIdx],
               horaSalida: exitTime,
               tipoSalida: 'conclusion_final',
-              registradoSalidaPor: currentUser.nombre
+              registradoSalidaPor: currentUser.nombre,
+              gpsSalida: gpsLocation
             };
           }
         } else if (c.hora_entrada) {
@@ -2738,7 +3247,8 @@ export default function App() {
             horaSalida: exitTime,
             tipoSalida: 'conclusion_final',
             registradoEntradaPor: 'Sistema',
-            registradoSalidaPor: currentUser.nombre
+            registradoSalidaPor: currentUser.nombre,
+            gpsSalida: gpsLocation
           }];
         }
 
@@ -2747,6 +3257,8 @@ export default function App() {
           estado: 'concluido' as const,
           fechaCierre: now,
           hora_salida: exitTime,
+          gps_latitud_salida: gpsLocation?.latitude || c.gps_latitud_salida,
+          gps_longitud_salida: gpsLocation?.longitude || c.gps_longitud_salida,
           jornadas: updatedJornadas,
           evidencias: [
             ...(c.evidencias || []),
@@ -2755,8 +3267,9 @@ export default function App() {
               subidoPor: currentUser.nombre,
               tipo: 'final' as const,
               archivoUrl: base64,
-              nombreArchivo: `evidencia_resolucion_${index + 1}.jpg`,
-              fecha: now
+              nombreArchivo: encodeGpsInFilename(`evidencia_resolucion_${index + 1}.jpg`, gpsLocation),
+              fecha: now,
+              coordenadas: gpsLocation
             }))
           ],
           comentarios: [
@@ -2788,11 +3301,12 @@ export default function App() {
             subido_por: currentUser.nombre,
             tipo: 'final',
             archivo_url: base64,
-            nombre_archivo: `evidencia_resolucion_${index + 1}.jpg`,
+            nombre_archivo: encodeGpsInFilename(`evidencia_resolucion_${index + 1}.jpg`, gpsLocation),
             fecha: now
           }));
           supabase.from('evidencias').insert(inserts).then(({ error: errEv }: any) => {
             if (errEv) console.error("Error al guardar evidencia en Supabase:", errEv);
+            dbOptimizer.invalidate('casos');
           });
         }
 
@@ -2816,21 +3330,102 @@ export default function App() {
     );
   };
 
-  const handleConcludeCase = (e: React.FormEvent, caseId: number) => {
+  const handleConcludeCase = (
+    e: React.FormEvent, 
+    caseId: number, 
+    customFiles?: string[],
+    customGpsLoc?: { latitude: number; longitude: number; accuracy?: number }
+  ) => {
     if (e && typeof e.preventDefault === 'function') {
       e.preventDefault();
     }
     if (!currentUser) return;
 
+    const filesToUse = customFiles && customFiles.length > 0 ? customFiles : solveEvidenceFiles;
     setShowSolveModal(false);
-    handleConcludeCaseDirect(caseId, solutionDesc, solveEvidenceFiles);
+    handleConcludeCaseDirect(caseId, solutionDesc, filesToUse, customGpsLoc);
     setSolutionDesc('');
     setSolveEvidenceFiles([]);
+
+    // Si este caso era el timbrado activo, cerrar también el punch clock
+    if (activePunchClock?.casoId === caseId) {
+      setActivePunchClock(null);
+      try {
+        localStorage.removeItem(`maint_tech_punch_${currentUser.id}`);
+      } catch {}
+    }
+  };
+
+  // Subir / adjuntar evidencia directamente a un caso existente (con GPS)
+  const handleAddEvidenceDirect = async (caseId: number) => {
+    if (!addEvidencePhoto || !currentUser) return;
+    setIsUploadingEvidence(true);
+    const nowIso = new Date().toISOString();
+    const filenameWithGps = encodeGpsInFilename(`evidencia_${Date.now()}.jpg`, addEvidenceGpsLoc);
+
+    const newEv: Evidence = {
+      id: Date.now(),
+      subidoPor: currentUser.nombre,
+      tipo: 'progreso_campo',
+      archivoUrl: addEvidencePhoto,
+      nombreArchivo: filenameWithGps,
+      fecha: nowIso,
+      coordenadas: addEvidenceGpsLoc ? {
+        latitude: addEvidenceGpsLoc.latitude,
+        longitude: addEvidenceGpsLoc.longitude,
+        accuracy: addEvidenceGpsLoc.accuracy
+      } : undefined
+    };
+
+    setCases(prev => prev.map(c => c.id === caseId ? {
+      ...c,
+      evidencias: [newEv, ...(c.evidencias || [])]
+    } : c));
+
+    dbOptimizer.updateCachedList<Case>('casos', prevList => (prevList || []).map(c => c.id === caseId ? {
+      ...c,
+      evidencias: [newEv, ...(c.evidencias || [])]
+    } : c));
+
+    if (isSupabaseConfigured) {
+      try {
+        const { error } = await supabase.from('evidencias').insert([{
+          caso_id: caseId,
+          subido_por: currentUser.nombre,
+          tipo: 'progreso_campo',
+          archivo_url: addEvidencePhoto,
+          nombre_archivo: filenameWithGps,
+          fecha: nowIso
+        }]);
+        if (error) console.error("Error al guardar evidencia en Supabase:", error);
+        dbOptimizer.invalidate('casos');
+      } catch (err) {
+        console.error("Error subiendo evidencia a Supabase:", err);
+      }
+    }
+
+    setAddEvidencePhoto(null);
+    setAddEvidenceGpsLoc(null);
+    setShowAddEvidenceModal(false);
+    setIsUploadingEvidence(false);
+    setMaintToast({
+      mostrar: true,
+      titulo: '📸 Evidencia Guardada',
+      mensaje: 'La fotografía satelital se sincronizó con éxito en el caso.',
+      tipo: 'success'
+    });
   };
 
   // Close Case
   const handleCloseCase = (caseId: number) => {
     const now = new Date().toISOString();
+
+    if (activePunchClock?.casoId === caseId) {
+      setActivePunchClock(null);
+      try {
+        localStorage.removeItem(`maint_tech_punch_${currentUser?.id}`);
+      } catch {}
+    }
     setCases(cases.map(c => {
       if (c.id === caseId) {
         return {
@@ -3084,6 +3679,9 @@ export default function App() {
       const limit = new Date(now.getTime() + 48 * 3600000).toISOString();
       const newId = cases.length > 0 ? Math.max(...cases.map(c => c.id)) + 1 : 2001;
 
+      const initialPhotos = data.newCaseData.fotosIniciales || [];
+      const gpsLoc = (data.newCaseData as any).gpsLocation || (data as any).gpsLocation;
+
       const newCase: Case = {
         id: newId,
         tiendaId: data.tiendaId,
@@ -3099,21 +3697,33 @@ export default function App() {
         tecnico_estatus_trabajo: 'Trabajando en tienda',
         tecnico_presencial_nombre: currentUser.nombre,
         hora_entrada: nowIso,
+        gps_latitud_entrada: gpsLoc?.latitude,
+        gps_longitud_entrada: gpsLoc?.longitude,
         jornadas: [{
           id: Date.now(),
           numeroVisita: 1,
           tecnicoNombre: currentUser.nombre,
           horaEntrada: nowIso,
           horaSalida: undefined,
-          registradoEntradaPor: currentUser.nombre
+          registradoEntradaPor: currentUser.nombre,
+          gpsEntrada: gpsLoc ? {
+            latitude: gpsLoc.latitude,
+            longitude: gpsLoc.longitude,
+            accuracy: gpsLoc.accuracy
+          } : undefined
         }],
-        evidencias: (data.newCaseData.fotosIniciales || []).map((b64, idx) => ({
+        evidencias: initialPhotos.map((b64, idx) => ({
           id: Date.now() + idx,
           subidoPor: currentUser.nombre,
-          tipo: 'inicial',
+          tipo: 'foto_ingreso_gps',
           archivoUrl: b64,
-          nombreArchivo: `evidencia_inicial_${idx + 1}.jpg`,
-          fecha: nowIso
+          nombreArchivo: `evidencia_ingreso_${idx + 1}.jpg`,
+          fecha: nowIso,
+          coordenadas: gpsLoc ? {
+            latitude: gpsLoc.latitude,
+            longitude: gpsLoc.longitude,
+            accuracy: gpsLoc.accuracy
+          } : undefined
         })),
         comentarios: [{
           id: Date.now(),
@@ -3132,15 +3742,25 @@ export default function App() {
       };
 
       setCases([newCase, ...cases]);
+      dbOptimizer.updateCachedList<Case>('casos', (prevList) => [newCase, ...(prevList || [])]);
 
       if (isSupabaseConfigured) {
+        const numericTiendaId = typeof data.tiendaId === 'number'
+          ? data.tiendaId
+          : parseInt(String(data.tiendaId).replace(/\D/g, ''), 10) || 1;
+
+        const prioMap: Record<string, number> = { 'baja': 1, 'media': 2, 'alta': 3, 'critica': 4 };
+        const numericPrioridad = typeof data.newCaseData.prioridad === 'number'
+          ? data.newCaseData.prioridad
+          : (prioMap[data.newCaseData.prioridad] || 2);
+
         supabase.from('casos').insert([{
           id: newId,
-          tienda_id: data.tiendaId,
+          tienda_id: numericTiendaId,
           creado_por: currentUser.id,
           categoria: data.newCaseData.categoria,
           descripcion: data.newCaseData.descripcion,
-          prioridad_nivel: data.newCaseData.prioridad,
+          prioridad_nivel: numericPrioridad,
           estado: 'en_proceso',
           tecnico_asignado_id: currentUser.id,
           fecha_creacion: nowIso,
@@ -3149,8 +3769,35 @@ export default function App() {
           tecnico_estatus_trabajo: 'Trabajando en tienda',
           tecnico_presencial_nombre: currentUser.nombre,
           hora_entrada: nowIso
-        }]).then(({ error }: any) => {
-          if (error) console.error("Error al insertar caso técnico en Supabase:", error);
+        }]).then(async ({ error }: any) => {
+          if (error) {
+            console.error("Error al insertar caso técnico en Supabase:", error);
+          } else {
+            // Sincronizar evidencias fotográficas con Supabase con GPS codificado
+            if (initialPhotos.length > 0) {
+              const rows = initialPhotos.map((b64, idx) => ({
+                caso_id: newId,
+                subido_por: currentUser.nombre,
+                tipo: 'foto_ingreso_gps',
+                archivo_url: b64,
+                nombre_archivo: encodeGpsInFilename(`evidencia_ingreso_${idx + 1}.jpg`, gpsLoc),
+                fecha: nowIso
+              }));
+              const { error: evErr } = await supabase.from('evidencias').insert(rows);
+              if (evErr) console.error("Error al insertar evidencias fotográficas en Supabase:", evErr);
+            }
+
+            // Registrar comentario inicial en Supabase
+            await supabase.from('comentarios').insert([{
+              caso_id: newId,
+              autor: currentUser.nombre,
+              rol: currentUser.rol,
+              texto: `⏱️ INGRESO TIMBRADO CON GPS: Técnico ${currentUser.nombre} timbró su ingreso en tienda a las ${now.toLocaleTimeString()} e inició el caso con validación satelital.`,
+              fecha: nowIso
+            }]);
+
+            dbOptimizer.invalidate('casos');
+          }
         });
       }
 
@@ -4641,7 +5288,28 @@ export default function App() {
                 </div>
               )}
 
-              <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', marginTop: '20px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <a
+                  href="/ManteTiendas.apk"
+                  download="ManteTiendas.apk"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    color: '#10B981',
+                    background: 'rgba(16, 185, 129, 0.1)',
+                    border: '1px solid rgba(16, 185, 129, 0.3)',
+                    padding: '7px 16px',
+                    borderRadius: '8px',
+                    textDecoration: 'none',
+                    fontWeight: 700,
+                    fontSize: '0.8rem',
+                    transition: 'all 0.2s'
+                  }}
+                  title="Descargar instalador APK para teléfonos Android"
+                >
+                  📥 Descargar App Android (APK v2.0)
+                </a>
                 <span>🔒 Conexión segura y cifrada</span>
               </div>
             </div>
@@ -4674,34 +5342,38 @@ export default function App() {
             </div>
 
             <div className="header-user-section">
-              {/* Technician Timbrador Status Pill */}
-              {currentUser.rol === 'tecnico' && (
-                <button
-                  type="button"
-                  onClick={() => setShowTechTimbradorModal(true)}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '5px 12px',
-                    borderRadius: '999px',
-                    fontSize: '0.78rem',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    border: activePunchClock ? '1.5px solid #10B981' : '1.5px solid #EF4444',
-                    background: activePunchClock ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
-                    color: activePunchClock ? '#059669' : '#DC2626',
-                    transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
-                  }}
-                  title={activePunchClock ? "Sesión técnica activa. Clic para ver o marcar salida" : "Obligatorio: Clic para registrar tu ingreso a tienda"}
-                >
-                  <span style={{ fontSize: '0.9rem' }}>⏱️</span>
-                  {activePunchClock ? (
-                    <span>En Turno: {stores.find(s => s.id === activePunchClock.tiendaId)?.nombre?.split(' ')[0] || 'Tienda'}</span>
-                  ) : (
-                    <span>⚠️ Timbrar Ingreso</span>
-                  )}
-                </button>
+              {/* Quick User/Role Switcher for Localhost / Development */}
+              {(typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname.startsWith('192.168.'))) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--primary)', padding: '2px 6px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '4px' }}>
+                    DEV
+                  </span>
+                  <select
+                    className="input-box"
+                    value={currentUser.id}
+                    onChange={(e) => {
+                      const u = users.find(x => x.id === Number(e.target.value));
+                      if (u) {
+                        setCurrentUser(u);
+                        try { localStorage.setItem('maint_user', JSON.stringify(u)); } catch {}
+                        setMaintToast({
+                          mostrar: true,
+                          titulo: 'Perfil Cambiado',
+                          mensaje: `Ahora navegando como: ${u.nombre} (${u.rol.toUpperCase()})`,
+                          tipo: 'info'
+                        });
+                      }
+                    }}
+                    style={{ fontSize: '0.74rem', padding: '4px 6px', maxWidth: '140px', borderRadius: '6px', cursor: 'pointer', height: '32px' }}
+                    title="Cambio rápido de rol / usuario en entorno local"
+                  >
+                    {users.map(u => (
+                      <option key={u.id} value={u.id}>
+                        {u.rol === 'supervisor' ? '👁️' : u.rol === 'tecnico' ? '👷' : u.rol === 'administrador' ? '⚡' : '🏬'} {u.nombre} ({u.rol})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               )}
 
               {/* Theme Toggle Button */}
@@ -4960,6 +5632,16 @@ export default function App() {
                     🔑 Cambiar Contraseña
                   </button>
                 )}
+
+                <a
+                  href="/ManteTiendas.apk"
+                  download="ManteTiendas.apk"
+                  className="btn btn-secondary btn-sm"
+                  style={{ width: '100%', justifyContent: 'flex-start', padding: '8px 12px', textDecoration: 'none', color: '#10B981', fontWeight: 600 }}
+                  title="Descargar última versión de la aplicación para teléfonos Android"
+                >
+                  📱 Descargar App Android (APK)
+                </a>
 
                 <button
                   className="btn btn-danger btn-sm"
@@ -5404,14 +6086,16 @@ export default function App() {
                                 </div>
                               </div>
 
-                              <button
-                                type="button"
-                                className="btn btn-primary"
-                                onClick={() => handleLogTechEntry(selectedCase.id, selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico')}
-                                style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800, padding: '10px' }}
-                              >
-                                🟢 Registrar Reingreso a Tienda y Reanudar Labores
-                              </button>
+                              {((currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && (!currentUser.tiendaId || currentUser.tiendaId === selectedCase.tiendaId)) && (
+                                <button
+                                  type="button"
+                                  className="btn btn-primary"
+                                  onClick={() => handleLogTechEntry(selectedCase.id, selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico')}
+                                  style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800, padding: '10px' }}
+                                >
+                                  🟢 Registrar Reingreso a Tienda y Reanudar Labores
+                                </button>
+                              )}
 
                               <button 
                                 type="button"
@@ -5514,12 +6198,19 @@ export default function App() {
                   {caseDetailTab === 'asistencia' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                       <div className="detail-card assistance-control-card" style={{ background: 'var(--bg-panel)', padding: '16px', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)' }}>
-                        <h4 style={{ fontSize: '0.94rem', fontWeight: 800, marginBottom: '12px', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          ⏱️ Control de Asistencia y Jornadas en Tienda
-                        </h4>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                          <h4 style={{ fontSize: '0.94rem', fontWeight: 800, margin: 0, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            ⏱️ Control de Asistencia y Jornadas en Tienda
+                          </h4>
+                          {(selectedCase.gps_latitud_entrada || selectedCase.gps_latitud_salida) && (
+                            <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '3px 8px', borderRadius: '12px', background: 'rgba(16, 185, 129, 0.15)', color: '#059669', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                              📍 Coordenadas GPS Verificadas
+                            </span>
+                          )}
+                        </div>
 
                         {(() => {
-                          const isStoreUserForThisCase = (currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && currentUser.tiendaId === selectedCase.tiendaId;
+                          const isStoreUserForThisCase = (currentUser.rol === 'jefe_tienda' || currentUser.rol === 'subjefe') && (!currentUser.tiendaId || currentUser.tiendaId === selectedCase.tiendaId);
                           const isTechUser = currentUser.rol === 'tecnico';
                           const canManageAttendance = isStoreUserForThisCase || isTechUser || currentUser.rol === 'supervisor' || currentUser.rol === 'administrador';
 
@@ -5527,19 +6218,44 @@ export default function App() {
                           if (selectedCase.estado === 'concluido' || selectedCase.estado === 'cerrado') {
                             return (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                <div style={{ background: '#ecfdf5', padding: '14px', borderRadius: '8px', border: '1px solid #a7f3d0' }}>
-                                  <div style={{ fontSize: '0.86rem', color: '#047857', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '14px', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                                  <div style={{ fontSize: '0.86rem', color: 'var(--color-resolved)', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
                                     ✅ TRABAJO TÉCNICO FINALIZADO ({getCaseJornadas(selectedCase).length} {getCaseJornadas(selectedCase).length === 1 ? 'visita realizada' : 'visitas realizadas'})
                                   </div>
-                                  <div style={{ fontSize: '0.82rem', color: 'var(--text-main)', marginTop: '4px' }}>
+                                  <div style={{ fontSize: '0.84rem', color: 'var(--text-main)', marginTop: '4px' }}>
                                     👷 <strong>{selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico'}</strong>
                                   </div>
-                                  {selectedCase.hora_salida && (
+                                  {selectedCase.hora_entrada && (
                                     <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '3px' }}>
-                                      🔴 Salida final registrada a las: <strong>{new Date(selectedCase.hora_salida).toLocaleTimeString()}</strong>
+                                      🟢 Entrada inicial: <strong>{new Date(selectedCase.hora_entrada).toLocaleTimeString()}</strong>
+                                      {selectedCase.gps_latitud_entrada && selectedCase.gps_longitud_entrada && (
+                                        <a 
+                                          href={`https://www.google.com/maps?q=${selectedCase.gps_latitud_entrada},${selectedCase.gps_longitud_entrada}`}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          style={{ marginLeft: '8px', color: '#2563eb', fontWeight: 600, textDecoration: 'underline' }}
+                                        >
+                                          📍 GPS Entrada Maps ↗
+                                        </a>
+                                      )}
                                     </div>
                                   )}
-                                  <div style={{ fontSize: '0.78rem', color: '#059669', marginTop: '4px' }}>
+                                  {selectedCase.hora_salida && (
+                                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '3px' }}>
+                                      🔴 Salida final: <strong>{new Date(selectedCase.hora_salida).toLocaleTimeString()}</strong>
+                                      {selectedCase.gps_latitud_salida && selectedCase.gps_longitud_salida && (
+                                        <a 
+                                          href={`https://www.google.com/maps?q=${selectedCase.gps_latitud_salida},${selectedCase.gps_longitud_salida}`}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          style={{ marginLeft: '8px', color: '#2563eb', fontWeight: 600, textDecoration: 'underline' }}
+                                        >
+                                          📍 GPS Salida Maps ↗
+                                        </a>
+                                      )}
+                                    </div>
+                                  )}
+                                  <div style={{ fontSize: '0.78rem', color: 'var(--color-resolved)', marginTop: '4px' }}>
                                     {selectedCase.estado === 'concluido' 
                                       ? '📋 Estado: Concluido con evidencias fotográficas. En espera de corroboración del local.' 
                                       : '🔒 Estado: Cerrado y validado definitivamente.'}
@@ -5566,8 +6282,8 @@ export default function App() {
                           if (selectedCase.pausado_por_material) {
                             return (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                <div style={{ background: '#fefce8', border: '1px solid #fef08a', padding: '12px', borderRadius: '8px' }}>
-                                  <div style={{ fontSize: '0.84rem', color: '#a16207', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <div style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', padding: '12px', borderRadius: '8px' }}>
+                                  <div style={{ fontSize: '0.84rem', color: '#d97706', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
                                     ⏸️ CASO EN PAUSA (Salida de técnico registrada)
                                   </div>
                                   <p style={{ fontSize: '0.82rem', color: 'var(--text-main)', margin: '6px 0 0 0', lineHeight: 1.4 }}>
@@ -5576,23 +6292,35 @@ export default function App() {
                                   {selectedCase.hora_salida && (
                                     <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                                       ⏱️ Salida de visita anterior: {new Date(selectedCase.hora_salida).toLocaleTimeString()}
+                                      {selectedCase.gps_latitud_salida && selectedCase.gps_longitud_salida && (
+                                        <a 
+                                          href={`https://www.google.com/maps?q=${selectedCase.gps_latitud_salida},${selectedCase.gps_longitud_salida}`}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          style={{ marginLeft: '8px', color: '#2563eb', fontWeight: 600, textDecoration: 'underline' }}
+                                        >
+                                          📍 Ver GPS Maps ↗
+                                        </a>
+                                      )}
                                     </div>
                                   )}
                                 </div>
 
                                 {canManageAttendance && (
                                   <>
-                                    <button
-                                      type="button"
-                                      className="btn btn-primary"
-                                      onClick={() => handleLogTechEntry(selectedCase.id, selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico')}
-                                      style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800, padding: '10px', fontSize: '0.85rem' }}
-                                    >
-                                      🟢 Registrar Reingreso del Técnico y Reanudar Labores
-                                    </button>
+                                    {isStoreUserForThisCase && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        onClick={() => handleLogTechEntry(selectedCase.id, selectedCase.tecnico_presencial_nombre || users.find(u => u.id === selectedCase.tecnicoAsignadoId)?.nombre || 'Técnico')}
+                                        style={{ width: '100%', background: 'var(--color-resolved)', fontWeight: 800, padding: '10px', fontSize: '0.85rem' }}
+                                      >
+                                        🟢 Registrar Reingreso del Técnico y Reanudar Labores
+                                      </button>
+                                    )}
 
                                     <button 
-                                      type="button"
+                                      type="button" 
                                       className="btn btn-primary" 
                                       onClick={() => setShowSolveModal(true)} 
                                       style={{ width: '100%', background: '#059669', fontWeight: 800, padding: '10px', fontSize: '0.85rem' }}
@@ -5618,10 +6346,10 @@ export default function App() {
 
                           // CASO 3: PENDIENTE DE PRIMER INGRESO (O TRAS REAPERTURA)
                           if (!selectedCase.hora_entrada || selectedCase.estado === 'pendiente') {
-                            if (!canManageAttendance) {
+                            if (!isStoreUserForThisCase) {
                               return (
                                 <div style={{ background: 'var(--bg-surface)', padding: '14px', borderRadius: '8px', border: '1px solid var(--border-color)', color: 'var(--text-muted)', fontSize: '0.84rem' }}>
-                                  ℹ️ <em>El registro de ingreso físico y confirmación de llegada del técnico corresponde al personal de la tienda o al técnico asignado.</em>
+                                  ℹ️ <em>La confirmación física de llegada del técnico a tienda e inicio del trabajo corresponde exclusivamente al personal del local (Jefe o Subjefe de Tienda).</em>
                                 </div>
                               );
                             }
@@ -5675,8 +6403,8 @@ export default function App() {
                           if (!selectedCase.hora_salida) {
                             return (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                <div style={{ background: '#ecfdf5', padding: '12px', borderRadius: '8px', border: '1px solid #a7f3d0' }}>
-                                  <div style={{ fontSize: '0.82rem', color: '#047857', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                                  <div style={{ fontSize: '0.82rem', color: 'var(--color-resolved)', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
                                     🟢 TÉCNICO EN TIENDA LABORANDO (Visita #{getCaseJornadas(selectedCase).length})
                                   </div>
                                   <div style={{ fontSize: '0.88rem', color: 'var(--text-main)', marginTop: '4px' }}>
@@ -5685,6 +6413,19 @@ export default function App() {
                                   <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                                     ⏱️ Hora de ingreso: <strong style={{ color: 'var(--primary)' }}>{new Date(selectedCase.hora_entrada!).toLocaleTimeString()}</strong>
                                   </div>
+                                  {selectedCase.gps_latitud_entrada && selectedCase.gps_longitud_entrada && (
+                                    <div style={{ fontSize: '0.75rem', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      <span style={{ color: 'var(--text-muted)' }}>📍 GPS Entrada ({selectedCase.gps_latitud_entrada.toFixed(4)}, {selectedCase.gps_longitud_entrada.toFixed(4)})</span>
+                                      <a 
+                                        href={`https://www.google.com/maps?q=${selectedCase.gps_latitud_entrada},${selectedCase.gps_longitud_entrada}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'underline' }}
+                                      >
+                                        Ver en Google Maps ↗
+                                      </a>
+                                    </div>
+                                  )}
                                 </div>
 
                                 {canManageAttendance && (
@@ -5732,9 +6473,21 @@ export default function App() {
                                 <div style={{ color: 'var(--text-main)', marginTop: '2px' }}>
                                   Salida de visita #{getCaseJornadas(selectedCase).length}: <strong>{new Date(selectedCase.hora_salida).toLocaleTimeString()}</strong>
                                 </div>
+                                {selectedCase.gps_latitud_salida && selectedCase.gps_longitud_salida && (
+                                  <div style={{ marginTop: '4px', fontSize: '0.75rem' }}>
+                                    <a 
+                                      href={`https://www.google.com/maps?q=${selectedCase.gps_latitud_salida},${selectedCase.gps_longitud_salida}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'underline' }}
+                                    >
+                                      📍 Ubicación de Salida en Maps ↗
+                                    </a>
+                                  </div>
+                                )}
                               </div>
 
-                              {canManageAttendance && (
+                              {isStoreUserForThisCase && (
                                 <button
                                   type="button"
                                   className="btn btn-primary"
@@ -5756,21 +6509,45 @@ export default function App() {
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                               {getCaseJornadas(selectedCase).map((j, idx) => (
-                                <div key={j.id || idx} style={{ background: 'var(--bg-surface)', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.78rem' }}>
+                                <div key={j.id || idx} style={{ background: 'var(--bg-surface)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.78rem' }}>
                                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 700 }}>
                                     <span style={{ color: 'var(--primary)' }}>Visita #{j.numeroVisita || idx + 1}: {j.tecnicoNombre}</span>
                                     <span style={{ fontSize: '0.7rem', color: j.horaSalida ? 'var(--text-muted)' : 'var(--color-resolved)' }}>
                                       {j.horaSalida ? 'Finalizada' : '🟢 En curso'}
                                     </span>
                                   </div>
-                                  <div style={{ display: 'flex', gap: '10px', marginTop: '4px', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-                                    <span>🟢 Entrada: <strong>{new Date(j.horaEntrada).toLocaleTimeString()}</strong></span>
+                                  <div style={{ display: 'flex', gap: '12px', marginTop: '6px', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                      🟢 Entrada: <strong>{new Date(j.horaEntrada).toLocaleTimeString()}</strong>
+                                      {j.gpsEntrada && (
+                                        <a 
+                                          href={`https://www.google.com/maps?q=${j.gpsEntrada.latitude},${j.gpsEntrada.longitude}`}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600, fontSize: '0.72rem' }}
+                                        >
+                                          📍 Maps ↗
+                                        </a>
+                                      )}
+                                    </span>
                                     {j.horaSalida && (
-                                      <span>🔴 Salida: <strong>{new Date(j.horaSalida).toLocaleTimeString()}</strong></span>
+                                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                        🔴 Salida: <strong>{new Date(j.horaSalida).toLocaleTimeString()}</strong>
+                                        {j.gpsSalida && (
+                                          <a 
+                                            href={`https://www.google.com/maps?q=${j.gpsSalida.latitude},${j.gpsSalida.longitude}`}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600, fontSize: '0.72rem' }}
+                                          >
+                                            📍 Maps ↗
+                                          </a>
+                                        )}
+                                      </span>
                                     )}
                                   </div>
                                   {j.motivoPausa && (
-                                    <div style={{ marginTop: '3px', color: '#a16207', fontSize: '0.74rem' }}>
+                                    <div style={{ marginTop: '3px', color: '#d97706', fontSize: '0.74rem' }}>
                                       ⏸️ Motivo Pausa: "{j.motivoPausa}"
                                     </div>
                                   )}
@@ -5853,22 +6630,158 @@ export default function App() {
                   {caseDetailTab === 'evidencias' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                       <div className="detail-card">
-                        <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 800, textTransform: 'uppercase', marginBottom: '12px' }}>
-                          📸 Fotos de Evidencia ({(selectedCase.evidencias?.length || 0)})
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 800, textTransform: 'uppercase' }}>
+                            📸 Fotos de Evidencia ({(selectedCase.evidencias?.length || 0)})
+                          </div>
+                          
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            {currentUser?.rol === 'tecnico' && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => {
+                                  setAddEvidencePhoto(null);
+                                  setAddEvidenceGpsLoc(null);
+                                  setShowAddEvidenceModal(true);
+                                }}
+                                style={{ fontSize: '0.75rem', fontWeight: 700, padding: '5px 12px', display: 'inline-flex', alignItems: 'center', gap: '4px', borderColor: '#10b981', color: '#059669' }}
+                              >
+                                📷 Adjuntar Foto con GPS
+                              </button>
+                            )}
+                            {(currentUser?.rol === 'supervisor' || currentUser?.rol === 'administrador') && (
+                              <span style={{ fontSize: '0.72rem', color: 'var(--primary)', fontWeight: 600 }}>
+                                💡 Clic en cualquier foto para ver GPS y mapa
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         {(selectedCase.evidencias?.length || 0) === 0 ? (
-                          <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                            No hay fotos de evidencia adjuntadas a este caso.
+                          <div style={{ padding: '36px 16px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', background: 'var(--bg-surface)', borderRadius: '10px', border: '1px dashed var(--border-color)' }}>
+                            <span style={{ fontSize: '2.5rem' }}>📷</span>
+                            <div style={{ color: 'var(--text-main)', fontWeight: 700, fontSize: '0.9rem' }}>
+                              No hay fotos de evidencia adjuntadas a este caso
+                            </div>
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: 0, maxWidth: '380px', lineHeight: 1.4 }}>
+                              {currentUser?.rol === 'tecnico'
+                                ? 'Puedes capturar y adjuntar fotografías en campo con geolocalización satelital para este caso.'
+                                : 'Las fotografías de evidencia serán subidas por el técnico asignado durante la atención.'}
+                            </p>
+                            {currentUser?.rol === 'tecnico' && (
+                              <button
+                                type="button"
+                                className="btn btn-primary btn-sm"
+                                onClick={() => {
+                                  setAddEvidencePhoto(null);
+                                  setAddEvidenceGpsLoc(null);
+                                  setShowAddEvidenceModal(true);
+                                }}
+                                style={{ padding: '8px 18px', fontWeight: 800, fontSize: '0.84rem', marginTop: '4px' }}
+                              >
+                                📷 Tomar Foto de Evidencia Ahora
+                              </button>
+                            )}
                           </div>
                         ) : (
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: '14px' }}>
                             {(selectedCase.evidencias || []).map(ev => (
-                              <div key={ev.id} style={{ border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden', background: 'var(--bg-surface)' }}>
-                                <img src={ev.archivoUrl} alt="evidencia" style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }} />
-                                <div style={{ fontSize: '0.72rem', padding: '8px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                                  {selectedCase.es_caso_tecnico ? `Subido por ${ev.subidoPor}` : 
-                                   ev.tipo === 'final' ? `✅ Solución por ${ev.subidoPor}` : `📷 Inicial por ${ev.subidoPor}`}
+                              <div 
+                                key={ev.id} 
+                                style={{ 
+                                  border: '1px solid var(--border-color)', 
+                                  borderRadius: '10px', 
+                                  overflow: 'hidden', 
+                                  background: 'var(--bg-surface)',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+                                  cursor: 'pointer'
+                                }}
+                                onClick={() => setSelectedEvidenceModal(ev)}
+                                title="Clic para ampliar y ver GPS"
+                              >
+                                <div style={{ position: 'relative', width: '100%', height: '170px', background: '#0f172a' }}>
+                                  <img 
+                                    src={ev.archivoUrl} 
+                                    alt="evidencia" 
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} 
+                                  />
+                                  {ev.coordenadas && (
+                                    <div style={{
+                                      position: 'absolute',
+                                      bottom: '6px',
+                                      left: '6px',
+                                      background: 'rgba(15, 23, 42, 0.85)',
+                                      backdropFilter: 'blur(4px)',
+                                      color: '#10b981',
+                                      fontSize: '0.68rem',
+                                      fontWeight: 700,
+                                      padding: '2px 8px',
+                                      borderRadius: '12px',
+                                      border: '1px solid rgba(16, 185, 129, 0.4)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px'
+                                    }}>
+                                      <span>📍 GPS</span>
+                                      <span>{ev.coordenadas.latitude.toFixed(3)}, {ev.coordenadas.longitude.toFixed(3)}</span>
+                                    </div>
+                                  )}
+                                  <div style={{
+                                    position: 'absolute',
+                                    top: '6px',
+                                    right: '6px',
+                                    background: 'rgba(0,0,0,0.6)',
+                                    color: '#fff',
+                                    borderRadius: '50%',
+                                    width: '24px',
+                                    height: '24px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '0.75rem'
+                                  }}>
+                                    🔍
+                                  </div>
+                                </div>
+
+                                <div style={{ fontSize: '0.74rem', padding: '10px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                  <div style={{ fontWeight: 700, color: 'var(--text-main)' }}>
+                                    {selectedCase.es_caso_tecnico ? `👷 Reporte Técnico` : 
+                                     ev.tipo === 'final' ? `✅ Solución de Caso` : `📷 Evidencia Inicial`}
+                                  </div>
+                                  <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                                    Por: <strong>{ev.subidoPor}</strong>
+                                  </div>
+                                  {ev.fecha && (
+                                    <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>
+                                      📅 {new Date(ev.fecha).toLocaleString()}
+                                    </div>
+                                  )}
+
+                                  <div style={{ display: 'flex', gap: '6px', marginTop: '6px', alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                                    {ev.coordenadas ? (
+                                      <a
+                                        href={`https://www.google.com/maps?q=${ev.coordenadas.latitude},${ev.coordenadas.longitude}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="btn btn-secondary btn-sm"
+                                        style={{ flex: 1, fontSize: '0.7rem', padding: '4px 6px', textAlign: 'center', textDecoration: 'none', color: '#2563eb', borderColor: 'rgba(37, 99, 235, 0.4)' }}
+                                      >
+                                        🗺️ Ver en Maps ↗
+                                      </a>
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      className="btn btn-primary btn-sm"
+                                      onClick={() => setSelectedEvidenceModal(ev)}
+                                      style={{ flex: 1, fontSize: '0.7rem', padding: '4px 6px' }}
+                                    >
+                                      🔍 Ampliar
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
                             ))}
@@ -6178,8 +7091,9 @@ export default function App() {
                   users={users}
                   stores={stores}
                   cases={cases}
-                  setSelectedCaseId={setSelectedCaseId}
+                  setSelectedCaseId={handleSelectCase}
                   setShowNewTechCaseModal={setShowNewTechCaseModal}
+                  onAttemptNewCase={handleAttemptNewCase}
                 />
               ) : activeTab === 'historial_asistencias' ? (
                 <HistorialAsistenciasTab
@@ -6187,7 +7101,7 @@ export default function App() {
                   cases={cases}
                   stores={stores}
                   users={users}
-                  setSelectedCaseId={setSelectedCaseId}
+                  setSelectedCaseId={handleSelectCase}
                   loadSheetJS={loadSheetJS}
                 />
               ) : activeTab === 'agenda_turnos' ? (
@@ -6217,13 +7131,13 @@ export default function App() {
                   {currentUser.rol === 'tecnico' && (
                     <TechTimbradorBanner
                       currentUser={currentUser}
-                      activePunchClock={activePunchClock}
-                      stores={stores}
-                      cases={cases}
+                      activePunchClock={effectivePunchClock}
+                      stores={Array.isArray(stores) ? stores : []}
+                      cases={Array.isArray(cases) ? cases : []}
                       onOpenClockIn={() => setShowTechTimbradorModal(true)}
                       onOpenClockOut={() => setShowTechTimbradorModal(true)}
                       onOpenEditCase={handleOpenEditCase}
-                      onOpenCaseDetail={setSelectedCaseId}
+                      onOpenCaseDetail={handleSelectCase}
                     />
                   )}
 
@@ -6395,13 +7309,30 @@ export default function App() {
                       </div>
                     ) : (
                       getFilteredCases().map(c => {
-                        const tienda = stores.find(s => s.id === c.tiendaId);
+                        const tienda = safeStores.find(s => s && s.id === c.tiendaId);
                         const breached = isSlaBreached(c) && (c.estado === 'pendiente' || c.estado === 'en_proceso');
+                        const isMyActiveCase = currentUser?.rol === 'tecnico' && techActiveCase && techActiveCase.id === c.id;
+                        const isOtherBlockedCase = currentUser?.rol === 'tecnico' && techActiveCase && techActiveCase.id !== c.id;
+
                         return (
-                          <div key={c.id} className={`ticket-card ${c.es_caso_tecnico ? '' : `priority-${c.prioridad}`}`} onClick={() => setSelectedCaseId(c.id)}>
+                          <div 
+                            key={c.id} 
+                            className={`ticket-card ${c.es_caso_tecnico ? '' : `priority-${c.prioridad}`} ${isMyActiveCase ? 'ticket-card-active-tech' : ''}`} 
+                            onClick={() => handleSelectCase(c.id)}
+                            style={{
+                              border: isMyActiveCase ? '2px solid #10B981' : undefined,
+                              boxShadow: isMyActiveCase ? '0 0 16px rgba(16, 185, 129, 0.25)' : undefined,
+                              opacity: isOtherBlockedCase ? 0.72 : 1
+                            }}
+                          >
                             <div className="card-main-info">
                               <div className="card-header">
                                 <strong>#{getCaseDisplayCode(c)}</strong>
+                                {isMyActiveCase && (
+                                  <span style={{ background: '#10B981', color: '#ffffff', fontSize: '0.66rem', fontWeight: 800, padding: '2px 7px', borderRadius: '999px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                                    ⚡ EN ATENCIÓN POR TI
+                                  </span>
+                                )}
                                 <span>•</span>
                                 <span>🏬 {tienda?.nombre} ({tienda?.ciudad})</span>
                                 <span>•</span>
@@ -6415,7 +7346,7 @@ export default function App() {
                                 <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '0.75rem' }}>
                                   {(c.tecnicoAsignadoId || c.tecnico_presencial_nombre) && (
                                     <span style={{ background: 'rgba(59, 130, 246, 0.1)', color: 'var(--primary)', padding: '3px 9px', borderRadius: '6px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                      👷 Técnico: {users.find(u => u.id === c.tecnicoAsignadoId)?.nombre || c.tecnico_presencial_nombre}
+                                      👷 Técnico: {safeUsers.find(u => u && u.id === c.tecnicoAsignadoId)?.nombre || c.tecnico_presencial_nombre}
                                     </span>
                                   )}
                                   {c.hora_entrada && (
@@ -6461,6 +7392,15 @@ export default function App() {
                                     style={{ padding: '3px 10px', fontSize: '0.74rem', borderRadius: '5px', fontWeight: 700, marginRight: '4px' }}
                                     onClick={(e) => {
                                       e.stopPropagation();
+                                      if (currentUser?.rol === 'tecnico' && techActiveCase) {
+                                        const store = safeStores.find(s => s && s.id === techActiveCase.tiendaId);
+                                        setBlockedActionMessage({
+                                          title: "Atención Exclusiva en Caso Activo",
+                                          detail: `Ya te encuentras atendiendo el Caso #${techActiveCase.id} en ${store ? store.nombre : 'tienda'}. Debes finalizar o pausar tu asistencia actual antes de tomar otro caso.`,
+                                          caseId: techActiveCase.id
+                                        });
+                                        return;
+                                      }
                                       setSelectedCaseId(c.id);
                                       setTakeCaseMode('solo');
                                       setTakeCaseSupportTech('');
@@ -6591,12 +7531,12 @@ export default function App() {
                 type="button"
                 className={`mobile-nav-btn ${showTechTimbradorModal ? 'active' : ''}`}
                 onClick={() => setShowTechTimbradorModal(true)}
-                style={{ color: activePunchClock ? '#059669' : '#DC2626', fontWeight: 800 }}
+                style={{ color: effectivePunchClock ? '#059669' : '#DC2626', fontWeight: 800 }}
               >
                 <span 
                   className="mobile-nav-icon" 
                   style={{ 
-                    background: activePunchClock ? '#10B981' : '#EF4444', 
+                    background: effectivePunchClock ? '#10B981' : '#EF4444', 
                     color: '#fff', 
                     width: '30px', 
                     height: '30px', 
@@ -6605,12 +7545,12 @@ export default function App() {
                     alignItems: 'center', 
                     justifyContent: 'center', 
                     fontSize: '1rem',
-                    boxShadow: activePunchClock ? '0 0 10px rgba(16, 185, 129, 0.45)' : 'none'
+                    boxShadow: effectivePunchClock ? '0 0 10px rgba(16, 185, 129, 0.45)' : 'none'
                   }}
                 >
                   ⏱️
                 </span>
-                <span>{activePunchClock ? 'En Turno' : 'Timbrar'}</span>
+                <span>{effectivePunchClock ? 'En Turno' : 'Timbrar'}</span>
               </button>
             ) : null}
 
@@ -6632,6 +7572,31 @@ export default function App() {
               <span>Menú</span>
             </button>
           </nav>
+        </div>
+      )}
+
+      {/* Floating Active Case Banner for Technicians on Mobile */}
+      {currentUser?.rol === 'tecnico' && techActiveCase && !selectedCaseId && (
+        <div className="mobile-active-case-float">
+          <div className="mobile-active-case-content" onClick={() => handleSelectCase(techActiveCase.id)}>
+            <div className="mobile-active-case-pulse" />
+            <div className="mobile-active-case-info">
+              <span className="mobile-active-case-label">⚡ CASO EN ATENCIÓN ACTIVA</span>
+              <span className="mobile-active-case-name">
+                #{techActiveCase.id} • {safeStores.find(s => s && s.id === techActiveCase.tiendaId)?.nombre || 'Tienda'}
+              </span>
+            </div>
+            <button 
+              type="button" 
+              className="mobile-active-case-action-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSelectCase(techActiveCase.id);
+              }}
+            >
+              Atender ➔
+            </button>
+          </div>
         </div>
       )}
 
@@ -6755,7 +7720,7 @@ export default function App() {
         handleSolveEvidenceChange={handleSolveEvidenceChange}
         setSolveEvidenceFiles={setSolveEvidenceFiles}
         onClose={() => setShowSolveModal(false)}
-        onConfirm={(e) => selectedCase && handleConcludeCase(e as any, selectedCase.id)}
+        onConfirm={(e, customFiles, gpsLoc) => selectedCase && handleConcludeCase(e as any, selectedCase.id, customFiles, gpsLoc)}
       />
 
       <FacturacionModal
@@ -6840,6 +7805,7 @@ export default function App() {
         setTakeCaseMode={setTakeCaseMode}
         takeCaseSupportTech={takeCaseSupportTech}
         setTakeCaseSupportTech={setTakeCaseSupportTech}
+        stores={stores}
         onClose={() => setShowTakeCaseModal(false)}
         onConfirm={handleConfirmTakeCase}
       />
@@ -6881,20 +7847,22 @@ export default function App() {
 
       
 
-      <TechTimbradorModal
-        show={showTechTimbradorModal}
-        onClose={() => setShowTechTimbradorModal(false)}
-        currentUser={currentUser}
-        stores={stores}
-        categories={DEFAULT_CATEGORIES}
-        cases={cases}
-        activePunchClock={activePunchClock}
-        onClockIn={handleTechClockIn}
-        onClockOut={handleTechClockOut}
-        onOpenEditCase={handleOpenEditCase}
-        onOpenCaseDetail={setSelectedCaseId}
-        compressImage={compressImage}
-      />
+      <ErrorBoundary fallbackTitle="Inconveniente en Timbrador" onReset={() => setShowTechTimbradorModal(false)}>
+        <TechTimbradorModal
+          show={showTechTimbradorModal}
+          onClose={() => setShowTechTimbradorModal(false)}
+          currentUser={currentUser}
+          stores={Array.isArray(stores) ? stores : []}
+          categories={DEFAULT_CATEGORIES || []}
+          cases={Array.isArray(cases) ? cases : []}
+          activePunchClock={effectivePunchClock}
+          onClockIn={handleTechClockIn}
+          onClockOut={handleTechClockOut}
+          onOpenEditCase={handleOpenEditCase}
+          onOpenCaseDetail={handleSelectCase}
+          compressImage={compressImage}
+        />
+      </ErrorBoundary>
 
       <NewTechCaseModal
         show={showNewTechCaseModal}
@@ -6907,6 +7875,10 @@ export default function App() {
         setTechCaseCategory={setTechCaseCategory}
         techCaseDesc={techCaseDesc}
         setTechCaseDesc={setTechCaseDesc}
+        techCaseGpsPhoto={techCaseGpsPhoto}
+        setTechCaseGpsPhoto={setTechCaseGpsPhoto}
+        techCaseGpsLocation={techCaseGpsLocation}
+        setTechCaseGpsLocation={setTechCaseGpsLocation}
         onClose={() => setShowNewTechCaseModal(false)}
         onSubmit={handleCreateTechCase}
       />
@@ -6934,6 +7906,291 @@ export default function App() {
         }}
         onConfirm={handleConfirmDeleteCase}
       />
+
+      {/* Modal: Aviso de Exclusividad Operativa para Técnicos */}
+      {blockedActionMessage && (
+        <div 
+          className="modal-backdrop" 
+          style={{ zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }} 
+          onClick={() => setBlockedActionMessage(null)}
+        >
+          <div 
+            className="modal-sheet" 
+            onClick={e => e.stopPropagation()} 
+            style={{ 
+              maxWidth: '440px', 
+              width: '100%', 
+              padding: '24px', 
+              textAlign: 'center', 
+              borderRadius: '20px',
+              boxShadow: '0 20px 40px -15px rgba(0, 0, 0, 0.4)'
+            }}
+          >
+            <div style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(245, 158, 11, 0.15) 100%)',
+              border: '2px solid rgba(239, 68, 68, 0.4)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '2rem',
+              margin: '0 auto 16px auto',
+              boxShadow: '0 8px 20px rgba(239, 68, 68, 0.2)'
+            }}>
+              🔒
+            </div>
+
+            <h3 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '10px' }}>
+              {blockedActionMessage.title}
+            </h3>
+
+            <p style={{ fontSize: '0.92rem', color: 'var(--text-muted)', lineHeight: '1.55', marginBottom: '22px' }}>
+              {blockedActionMessage.detail}
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {(blockedActionMessage.caseId || techActiveCase) && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{
+                    width: '100%',
+                    padding: '12px 18px',
+                    fontWeight: 700,
+                    fontSize: '0.95rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                  onClick={() => {
+                    const targetId = blockedActionMessage.caseId || techActiveCase?.id;
+                    setBlockedActionMessage(null);
+                    if (targetId) handleSelectCase(targetId);
+                  }}
+                >
+                  <span>⚡</span> Ir a Mi Caso en Curso (#{blockedActionMessage.caseId || techActiveCase?.id})
+                </button>
+              )}
+
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ width: '100%', padding: '10px 16px', fontSize: '0.9rem' }}
+                onClick={() => setBlockedActionMessage(null)}
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PARA TOMAR / ADJUNTAR EVIDENCIA FOTOGRÁFICA CON GPS DIRECTA (EXCLUSIVO TÉCNICOS) */}
+      {showAddEvidenceModal && selectedCase && currentUser?.rol === 'tecnico' && (
+        <div 
+          className="modal-backdrop" 
+          style={{ zIndex: 11000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+          onClick={() => {
+            if (!isUploadingEvidence) setShowAddEvidenceModal(false);
+          }}
+        >
+          <div 
+            className="modal-sheet" 
+            onClick={e => e.stopPropagation()} 
+            style={{ maxWidth: '520px', width: '100%', padding: '20px', borderRadius: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                  📷 Adjuntar Evidencia Fotográfica
+                </h3>
+                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                  Caso #{getCaseDisplayCode(selectedCase)} • {stores.find(s => s.id === selectedCase.tiendaId)?.nombre}
+                </span>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setShowAddEvidenceModal(false)}
+                disabled={isUploadingEvidence}
+                className="btn btn-secondary btn-sm"
+                style={{ borderRadius: '50%', width: '32px', height: '32px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <GpsCameraCapture
+              photoUrl={addEvidencePhoto}
+              onPhotoCaptured={(watermarked: string, loc: GpsLocation | null) => {
+                setAddEvidencePhoto(watermarked);
+                setAddEvidenceGpsLoc(loc);
+              }}
+              onPhotoRemoved={() => {
+                setAddEvidencePhoto(null);
+                setAddEvidenceGpsLoc(null);
+              }}
+              techName={currentUser?.nombre || 'Técnico'}
+              storeName={stores.find(s => s.id === selectedCase.tiendaId)?.nombre || 'En Tienda'}
+              actionTitle="Registro de Evidencia en Campo"
+              required={true}
+              label="Fotografía del trabajo con GPS"
+            />
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={isUploadingEvidence}
+                onClick={() => setShowAddEvidenceModal(false)}
+                style={{ fontSize: '0.85rem' }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!addEvidencePhoto || isUploadingEvidence}
+                onClick={() => handleAddEvidenceDirect(selectedCase.id)}
+                style={{ fontSize: '0.85rem', fontWeight: 800 }}
+              >
+                {isUploadingEvidence ? '⏳ Guardando en la nube...' : '💾 Guardar y Sincronizar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL LIGHTBOX DE EVIDENCIA CON GPS Y MAPA */}
+      {selectedEvidenceModal && (
+        <div 
+          className="modal-backdrop" 
+          style={{ zIndex: 11000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', background: 'rgba(0,0,0,0.85)' }}
+          onClick={() => setSelectedEvidenceModal(null)}
+        >
+          <div 
+            className="modal-sheet" 
+            onClick={e => e.stopPropagation()} 
+            style={{ 
+              maxWidth: '680px', 
+              width: '100%', 
+              padding: '20px', 
+              borderRadius: '16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px',
+              maxHeight: '92vh',
+              overflowY: 'auto'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1.25rem' }}>📸</span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                    Evidencia Fotográfica
+                  </h3>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    Subido por: <strong>{selectedEvidenceModal.subidoPor}</strong> • {new Date(selectedEvidenceModal.fecha).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setSelectedEvidenceModal(null)} 
+                className="btn btn-secondary btn-sm" 
+                style={{ borderRadius: '50%', width: '32px', height: '32px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Imagen Grande */}
+            <div style={{ width: '100%', borderRadius: '12px', overflow: 'hidden', background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', maxHeight: '55vh' }}>
+              <img 
+                src={selectedEvidenceModal.archivoUrl} 
+                alt="Evidencia ampliada" 
+                style={{ maxWidth: '100%', maxHeight: '55vh', objectFit: 'contain', display: 'block' }} 
+              />
+            </div>
+
+            {/* Panel de Metadatos GPS */}
+            {selectedEvidenceModal.coordenadas ? (
+              <div style={{
+                background: 'rgba(16, 185, 129, 0.08)',
+                border: '1px solid rgba(16, 185, 129, 0.25)',
+                borderRadius: '10px',
+                padding: '12px 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.84rem', fontWeight: 700, color: '#059669' }}>
+                    <span>📍</span>
+                    <span>Ubicación GPS Verificada por Satélite</span>
+                  </div>
+                  {selectedEvidenceModal.coordenadas.accuracy && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      Precisión: ±{Math.round(selectedEvidenceModal.coordenadas.accuracy)} metros
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-main)', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                  <span>Latitud: <strong>{selectedEvidenceModal.coordenadas.latitude.toFixed(6)}</strong></span>
+                  <span>Longitud: <strong>{selectedEvidenceModal.coordenadas.longitude.toFixed(6)}</strong></span>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px', flexWrap: 'wrap' }}>
+                  <a
+                    href={`https://www.google.com/maps?q=${selectedEvidenceModal.coordenadas.latitude},${selectedEvidenceModal.coordenadas.longitude}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn btn-primary btn-sm"
+                    style={{ background: '#2563eb', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.8rem' }}
+                  >
+                    🗺️ Abrir Coordenadas en Google Maps ↗
+                  </a>
+                  <a
+                    href={selectedEvidenceModal.archivoUrl}
+                    download={selectedEvidenceModal.nombreArchivo || `evidencia_${selectedEvidenceModal.id}.jpg`}
+                    className="btn btn-secondary btn-sm"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem' }}
+                  >
+                    💾 Descargar Foto
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Foto adjunta sin geolocalización satelital directa.</span>
+                <a
+                  href={selectedEvidenceModal.archivoUrl}
+                  download={selectedEvidenceModal.nombreArchivo || `evidencia_${selectedEvidenceModal.id}.jpg`}
+                  className="btn btn-secondary btn-sm"
+                  style={{ fontSize: '0.78rem' }}
+                >
+                  💾 Descargar
+                </a>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+              <button 
+                type="button" 
+                className="btn btn-secondary" 
+                onClick={() => setSelectedEvidenceModal(null)}
+                style={{ padding: '8px 18px', fontSize: '0.85rem' }}
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

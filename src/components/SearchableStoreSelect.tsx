@@ -24,20 +24,29 @@ export const SearchableStoreSelect: React.FC<{
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const safeStores = useMemo(() => {
+    return Array.isArray(stores) ? stores.filter(s => s && s.id != null) : [];
+  }, [stores]);
+
   const visibleStores = useMemo(() => {
-    return stores.filter((s: Store) => isStoreVisibleToUser(s, currentUser));
-  }, [stores, currentUser]);
+    return safeStores.filter((s: Store) => isStoreVisibleToUser(s, currentUser));
+  }, [safeStores, currentUser]);
 
   const selectedStore = useMemo(() => {
-    if (value === allOptionValue || value === 'todas' || value === 'todos') return null;
-    return stores.find((s: Store) => s.id.toString() === value.toString());
-  }, [stores, value, allOptionValue]);
+    if (value === null || value === undefined) return null;
+    const valStr = String(value).trim();
+    const allOptStr = String(allOptionValue).trim();
+    if (valStr === allOptStr || valStr === 'todas' || valStr === 'todos' || valStr === '0' && allOptStr === '0') {
+      return null;
+    }
+    return safeStores.find((s: Store) => s && s.id != null && String(s.id) === valStr) || null;
+  }, [safeStores, value, allOptionValue]);
 
   const filteredStores = useMemo(() => {
     if (!searchQuery.trim()) return visibleStores;
     const q = searchQuery.toLowerCase().trim();
     return visibleStores.filter((s: Store) => 
-      s.nombre.toLowerCase().includes(q) || 
+      (s.nombre || '').toLowerCase().includes(q) || 
       (s.ciudad && s.ciudad.toLowerCase().includes(q)) ||
       (s.direccion && s.direccion.toLowerCase().includes(q)) ||
       (s.unidad && s.unidad.toLowerCase().includes(q))

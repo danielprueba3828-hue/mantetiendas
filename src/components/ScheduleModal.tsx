@@ -34,6 +34,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 }) => {
   if (!show || !scheduleCaseId) return null;
 
+  const safeUsers = Array.isArray(users) ? users : [];
+
     return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: '460px' }}>
@@ -96,7 +98,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                 style={{ width: '100%' }}
               >
                 <option value="">-- Sin asignar --</option>
-                {users.filter(u => u.rol === 'tecnico' && u.estado).map(u => (
+                {safeUsers.filter(u => u && u.rol === 'tecnico' && u.estado).map(u => (
                   <option key={u.id} value={u.id}>{u.nombre}</option>
                 ))}
               </select>
