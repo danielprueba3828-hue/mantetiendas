@@ -568,12 +568,12 @@ export default function App() {
 
     const pollSync = async () => {
       try {
-        // 1. Polling de casos activos y recientes con evidencias completas
+        // 1. Polling de casos activos y recientes con evidencias ligeras (sin base64 para evitar statement timeout 500)
         const { data: latestCases } = await supabase
           .from('casos')
           .select(`
             *,
-            evidencias (*),
+            evidencias (id, caso_id, tipo, subido_por, nombre_archivo, fecha),
             comentarios (*)
           `)
           .order('id', { ascending: false })
@@ -583,7 +583,7 @@ export default function App() {
         if (selectedCaseId && latestCases && !latestCases.some((c: any) => c.id === selectedCaseId)) {
           const { data: currentSelectedRow } = await supabase
             .from('casos')
-            .select(`*, evidencias (*), comentarios (*)`)
+            .select(`*, evidencias (id, caso_id, tipo, subido_por, nombre_archivo, fecha), comentarios (*)`)
             .eq('id', selectedCaseId)
             .single();
           if (currentSelectedRow) {
@@ -616,13 +616,15 @@ export default function App() {
             const existingMap = new Map(prev.map(c => [c.id, c]));
 
             latestCases.forEach((dbC: any) => {
+              const existingCase = existingMap.get(dbC.id);
               const parsedEvs: Evidence[] = (dbC.evidencias || []).map((ev: any) => {
                 const parsedCoords = ev.coordenadas || parseGpsFromFilename(ev.nombre_archivo);
+                const existingEv = existingCase?.evidencias?.find(e => e.id === ev.id);
                 return {
                   id: ev.id,
                   subidoPor: ev.subido_por,
                   tipo: ev.tipo,
-                  archivoUrl: ev.archivo_url,
+                  archivoUrl: ev.archivo_url || existingEv?.archivoUrl || '',
                   nombreArchivo: ev.nombre_archivo,
                   fecha: ev.fecha,
                   coordenadas: parsedCoords
@@ -636,7 +638,6 @@ export default function App() {
               const latOut = dbC.gps_latitud_salida || exitEv?.coordenadas?.latitude;
               const lngOut = dbC.gps_longitud_salida || exitEv?.coordenadas?.longitude;
 
-              const existingCase = existingMap.get(dbC.id);
               // Mantener fotos locales base64 si aún están en memoria y la nube tiene menos fotos
               const combinedEvidencias = parsedEvs.length >= (existingCase?.evidencias?.length || 0)
                 ? parsedEvs
@@ -1465,7 +1466,7 @@ export default function App() {
           async () => await supabase.from('casos').select(`
             *,
             comentarios (*),
-            evidencias (*)
+            evidencias (id, caso_id, tipo, subido_por, nombre_archivo, fecha)
           `),
           { ttlMs: DB_CACHE_PRESETS.OPERATIONAL_DATA }
         );
@@ -1478,7 +1479,7 @@ export default function App() {
                 id: ev.id,
                 subidoPor: ev.subido_por,
                 tipo: ev.tipo,
-                archivoUrl: ev.archivo_url,
+                archivoUrl: ev.archivo_url || '',
                 nombreArchivo: ev.nombre_archivo,
                 fecha: ev.fecha,
                 coordenadas: parsedCoords
@@ -2042,7 +2043,7 @@ export default function App() {
       const store = safeStores.find(s => s && s.id === techActiveCase.tiendaId);
       setBlockedActionMessage({
         title: "Atención Exclusiva en Caso Activo",
-        detail: `Actualmente te encuentras atendiendo el Caso #${techActiveCase.id} (${techActiveCase.categoria}) en ${store ? store.nombre : 'tienda'}. Por normativa operativa, debes concluir o registrar la salida de este caso antes de poder abrir o atender otro trabajo.`,
+        detail: `Actualmente te encuentras atendiendo el Caso #${techActiveCase.id} (${techActiveCase.categoria}) en ${store ? store.nombre : 'tienda'}. Por normativa operativa, debes finalizar o poner en pausa tu caso activo actual para poder cambiar de trabajo o caso.`,
         caseId: techActiveCase.id
       });
       return;
@@ -2050,13 +2051,49 @@ export default function App() {
     setSelectedCaseId(caseId);
   };
 
+  // Carga reactiva bajo demanda de evidencias completas con imágenes para el caso seleccionado
+  useEffect(() => {
+    if (!selectedCaseId || !isSupabaseConfigured) return;
+    let isCancelled = false;
+
+    supabase
+      .from('evidencias')
+      .select('*')
+      .eq('caso_id', selectedCaseId)
+      .then(({ data: fullEvs, error }: any) => {
+        if (isCancelled || error || !fullEvs || fullEvs.length === 0) return;
+        setCases(prev => prev.map(c => {
+          if (c.id === selectedCaseId) {
+            const mappedEvs: Evidence[] = fullEvs.map((ev: any) => ({
+              id: ev.id,
+              subidoPor: ev.subido_por,
+              tipo: ev.tipo,
+              archivoUrl: ev.archivo_url,
+              nombreArchivo: ev.nombre_archivo,
+              fecha: ev.fecha,
+              coordenadas: ev.coordenadas || parseGpsFromFilename(ev.nombre_archivo)
+            }));
+            return {
+              ...c,
+              evidencias: mappedEvs
+            };
+          }
+          return c;
+        }));
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedCaseId, isSupabaseConfigured]);
+
   // Creación controlada de casos: Los técnicos no pueden crear otro caso mientras atienden uno
   const handleAttemptNewCase = () => {
     if (currentUser?.rol === 'tecnico' && techActiveCase) {
       const store = safeStores.find(s => s && s.id === techActiveCase.tiendaId);
       setBlockedActionMessage({
         title: "Atención Exclusiva en Caso Activo",
-        detail: `Ya te encuentras atendiendo el Caso #${techActiveCase.id} (${techActiveCase.categoria}) en ${store ? store.nombre : 'tienda'}. Debes finalizar tu asistencia actual antes de poder registrar o crear un nuevo caso.`,
+        detail: `Ya te encuentras atendiendo el Caso #${techActiveCase.id} (${techActiveCase.categoria}) en ${store ? store.nombre : 'tienda'}. Debes finalizar o poner en pausa tu caso activo actual para poder cambiar de trabajo o caso.`,
         caseId: techActiveCase.id
       });
       return;
@@ -7575,15 +7612,21 @@ export default function App() {
         </div>
       )}
 
-      {/* Floating Active Case Banner for Technicians on Mobile */}
+      {/* Floating Active Case Banner for Technicians */}
       {currentUser?.rol === 'tecnico' && techActiveCase && !selectedCaseId && (
         <div className="mobile-active-case-float">
           <div className="mobile-active-case-content" onClick={() => handleSelectCase(techActiveCase.id)}>
             <div className="mobile-active-case-pulse" />
             <div className="mobile-active-case-info">
-              <span className="mobile-active-case-label">⚡ CASO EN ATENCIÓN ACTIVA</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span className="mobile-active-case-label">⚡ CASO EN ATENCIÓN ACTIVA</span>
+                <span className="mobile-active-case-badge">#{techActiveCase.id}</span>
+              </div>
               <span className="mobile-active-case-name">
-                #{techActiveCase.id} • {safeStores.find(s => s && s.id === techActiveCase.tiendaId)?.nombre || 'Tienda'}
+                {safeStores.find(s => s && s.id === techActiveCase.tiendaId)?.nombre || 'Tienda'}
+              </span>
+              <span className="mobile-active-case-hint" title="Debes concluir o poner en pausa este caso para poder cambiar de trabajo o caso">
+                ⚠️ Concluye o pausa este caso para poder cambiar de trabajo o caso
               </span>
             </div>
             <button 
@@ -7593,6 +7636,7 @@ export default function App() {
                 e.stopPropagation();
                 handleSelectCase(techActiveCase.id);
               }}
+              title="Ir a gestionar este caso activo"
             >
               Atender ➔
             </button>
@@ -7971,7 +8015,7 @@ export default function App() {
                     if (targetId) handleSelectCase(targetId);
                   }}
                 >
-                  <span>⚡</span> Ir a Mi Caso en Curso (#{blockedActionMessage.caseId || techActiveCase?.id})
+                  <span>⚡</span> Ir a Mi Caso para Concluir o Pausar (#{blockedActionMessage.caseId || techActiveCase?.id})
                 </button>
               )}
 
